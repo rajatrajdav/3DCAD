@@ -4,7 +4,7 @@ import Landing from './pages/landing'
 import Login from './pages/login'
 import Register from './pages/register'
 import ProjectBrowser from './pages/projectbrowser'
-import CAD from './pages/3DCAD'
+import CADEditor from './pages/CADEditor'
 import Setting from './pages/setting'
 import ViewOnly from './pages/viewonly'
 
@@ -29,7 +29,7 @@ function App() {
 
         {/* Protected */}
         <Route path="/projects"  element={<PrivateRoute><ProjectBrowser /></PrivateRoute>} />
-        <Route path="/cad/:id"   element={<PrivateRoute><CAD /></PrivateRoute>} />
+        <Route path="/cad/:id"   element={<PrivateRoute><CADEditor /></PrivateRoute>} />
         <Route path="/view/:id"  element={<PrivateRoute><ViewOnly /></PrivateRoute>} />
         <Route path="/settings"  element={<PrivateRoute><Setting /></PrivateRoute>} />
 

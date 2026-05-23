@@ -1,4 +1,24 @@
-import { useState, useRef, useEffect, useCallback } from "react";
+// Backward compatibility wrapper - all functionality moved to CADEditor
+export { default } from './CADEditor';
+// Backward compatibility wrapper - all functionality moved to CADEditor
+export { default } from './CADEditor';
+
+const PROJECTS_KEY = "3dcad_projects";
+function loadProject(userId, projectId) {
+  try {
+    const projects = JSON.parse(localStorage.getItem(`${PROJECTS_KEY}_${userId}`)) || [];
+    return projects.find(p => p.id === projectId) || null;
+  } catch { return null; }
+}
+function saveEntities(userId, projectId, entities) {
+  try {
+    const key = `${PROJECTS_KEY}_${userId}`;
+    const projects = JSON.parse(localStorage.getItem(key)) || [];
+    localStorage.setItem(key, JSON.stringify(
+      projects.map(p => p.id === projectId ? { ...p, entities, updatedAt: new Date().toISOString() } : p)
+    ));
+  } catch {}
+}
 
 // ─── Icons ───────────────────────────────────────────────────────────────────
 const Icon = ({ d, size = 16, color = "currentColor", fill = "none", strokeWidth = 1.5 }) => (
@@ -62,12 +82,18 @@ const LAYERS = [
 ];
 
 // ─── Main CAD App ─────────────────────────────────────────────────────────────
-export default function App() {
+export default function CAD() {
+  const { id } = useParams();
+  const navigate = useNavigate();
+  const session = getSession();
+  const [project, setProject] = useState(null);
+  const containerRef = useRef(null);
   const canvasRef = useRef(null);
+  const [canvasSize, setCanvasSize] = useState({ w: 800, h: 600 });
   const [activeTool, setActiveTool] = useState("select");
   const [activeGroup, setActiveGroup] = useState(null);
   const [zoom, setZoom] = useState(1);
-  const [pan, setPan] = useState({ x: 0, y: 0 });
+  const [pan, setPan] = useState({ x: 400, y: 300 });
   const [cursor, setCursor] = useState({ x: 0, y: 0 });
   const [worldCursor, setWorldCursor] = useState({ x: 0, y: 0 });
   const [drawing, setDrawing] = useState(false);
@@ -83,7 +109,7 @@ export default function App() {
   const [commandLog, setCommandLog] = useState(["AutoCAD 3D Professional — Ready", "Type a command or select a tool"]);
   const [commandInput, setCommandInput] = useState("");
   const [showLayers, setShowLayers] = useState(false);
-  const [showProperties, setShowProperties] = useState(false);
+  const [showProperties, setShowProperties] = useState(true);
   const [viewMode, setViewMode] = useState("2D Top");
   const [lineColor, setLineColor] = useState("#00d4ff");
   const [lineWeight, setLineWeight] = useState(1.5);
@@ -104,7 +130,42 @@ export default function App() {
   const [showCoordDialog, setShowCoordDialog] = useState(false);
   const [coordInput, setCoordInput] = useState("");
   const [idCounter, setIdCounter] = useState(1);
+  const idRef = useRef(1);
   const GRID_SIZE = 20;
+
+  // ── Load project & restore entities ─────────────────────────────────────────────────────────────
+  useEffect(() => {
+    if (!session) { navigate("/login", { replace: true }); return; }
+    const p = loadProject(session.id, id);
+    if (!p) { navigate("/projects", { replace: true }); return; }
+    setProject(p);
+    if (p.entities && p.entities.length) {
+      setEntities(p.entities);
+      setHistory([p.entities]);
+      setHistoryIdx(0);
+    }
+  }, [id]);
+
+  // ── ResizeObserver: keep canvas filling its container ─────────────────────────────────────────────────────────────
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver(entries => {
+      for (const entry of entries) {
+        const { width, height } = entry.contentRect;
+        setCanvasSize({ w: Math.floor(width), h: Math.floor(height) });
+      }
+    });
+    ro.observe(el);
+    // Set initial size
+    setCanvasSize({ w: Math.floor(el.clientWidth), h: Math.floor(el.clientHeight) });
+    return () => ro.disconnect();
+  }, []);
+
+  // ── Auto-save entities to localStorage ─────────────────────────────────────────────────────────────
+  useEffect(() => {
+    if (session && id) saveEntities(session.id, id, entities);
+  }, [entities]);
 
   // ── Helpers ──────────────────────────────────────────────────────────────
   const toWorld = useCallback((sx, sy) => ({
@@ -130,10 +191,7 @@ export default function App() {
       : { x: from.x, y: to.y };
   };
 
-  const nextId = () => {
-    setIdCounter(c => c + 1);
-    return idCounter;
-  };
+  const nextId = () => { idRef.current += 1; return idRef.current; };
 
   const log = (msg) => setCommandLog(prev => [...prev.slice(-49), msg]);
 
@@ -373,7 +431,7 @@ export default function App() {
       ctx.fillText("Z", ux-28, uy+22);
       ctx.restore();
     }
-  }, [entities, pan, zoom, cursor, tempPoint, drawing, startPoint, activeTool, gridEnabled, snapEnabled, selectedIds, lineColor, lineWeight, polyPoints, layers, ucsIcon, dynamicInput, toScreen]);
+  }, [entities, pan, zoom, cursor, tempPoint, drawing, startPoint, activeTool, gridEnabled, snapEnabled, selectedIds, lineColor, lineWeight, polyPoints, layers, ucsIcon, dynamicInput, toScreen, canvasSize]);
 
   // ── Mouse ─────────────────────────────────────────────────────────────────
   const handleMouseMove = (e) => {
@@ -436,8 +494,8 @@ export default function App() {
 
   const handleDblClick = () => {
     if ((activeTool === "polyline" || activeTool === "spline") && polyPoints.length >= 2) {
-      const id = nextId();
-      const ent = { id, type: activeTool === "spline" ? "spline" : "polyline", points: [...polyPoints], color: lineColor, lineWeight, layer: currentLayer };
+      const eid = nextId();
+      const ent = { id: eid, type: activeTool === "spline" ? "spline" : "polyline", points: [...polyPoints], color: lineColor, lineWeight, layer: currentLayer };
       const ne = [...entities, ent];
       setEntities(ne); pushHistory(ne);
       log(`${activeTool.toUpperCase()} created with ${polyPoints.length} points`);
@@ -466,8 +524,8 @@ export default function App() {
   const finishEntity = (endPt) => {
     if (!startPoint) return;
     let ent = null;
-    const id = nextId();
-    const base = { id, color: lineColor, lineWeight, layer: currentLayer };
+    const eid = nextId();
+    const base = { id: eid, color: lineColor, lineWeight, layer: currentLayer };
 
     if (activeTool === "line") {
       ent = { ...base, type: "line", x1: startPoint.x, y1: startPoint.y, x2: endPt.x, y2: endPt.y };
@@ -629,7 +687,7 @@ export default function App() {
 
   // ─── UI ──────────────────────────────────────────────────────────────────
   const S = {
-    app: { display:"flex", flexDirection:"column", width:"100vw", height:"100vh", background:"#0d1117", color:"#c9d1d9", fontFamily:"'Segoe UI', 'SF Pro Display', system-ui, sans-serif", overflow:"hidden", userSelect:"none" },
+    app: { display:"flex", flexDirection:"column", width:"100vw", height:"100vh", background:"#0d1117", color:"#c9d1d9", fontFamily:"'Segoe UI', 'SF Pro Display', sans-serif", overflow:"hidden", userSelect:"none" },
     menuBar: { display:"flex", alignItems:"center", background:"linear-gradient(90deg,#1a2035,#0f1623)", borderBottom:"1px solid #2a3248", height:28, paddingLeft:8, gap:2, fontSize:12, flexShrink:0 },
     menuItem: { padding:"2px 10px", cursor:"pointer", borderRadius:3, color:"#a0aec0", transition:"background 0.15s" },
     ribbon: { background:"linear-gradient(180deg,#1c2540,#151e30)", borderBottom:"1px solid #1e2d4a", flexShrink:0 },
@@ -679,7 +737,8 @@ export default function App() {
           <div key={m} style={S.menuItem} onMouseEnter={e=>e.target.style.background="#1e2d4a"} onMouseLeave={e=>e.target.style.background="transparent"}>{m}</div>
         ))}
         <div style={{ flex:1 }} />
-        <div style={{ fontSize:11, color:"#3a4a5a", marginRight:12 }}>AutoCAD 3D Professional — 3DCAD.jsx</div>
+        <div style={{ fontSize:11, color:"#3a4a5a", marginRight:12 }}>3DCAD — {project?.name || "Loading..."}</div>
+        <button onClick={() => navigate("/projects")} style={{ background:"#1a2545", border:"1px solid #2a3248", color:"#4fc3f7", borderRadius:3, fontSize:11, padding:"2px 10px", cursor:"pointer", marginRight:8 }}>← Projects</button>
       </div>
 
       {/* Ribbon */}
@@ -766,12 +825,13 @@ export default function App() {
           </div>
         </div>
 
-        {/* Canvas */}
+        {/* Canvas container — fills remaining space */}
+        <div ref={containerRef} style={{ flex:1, overflow:"hidden", position:"relative" }}>
         <canvas
           ref={canvasRef}
-          width={window.innerWidth - 46 - 220}
-          height={window.innerHeight - 240}
-          style={S.canvas}
+          width={canvasSize.w}
+          height={canvasSize.h}
+          style={{ ...S.canvas, width:"100%", height:"100%", display:"block" }}
           onMouseMove={handleMouseMove}
           onMouseDown={handleMouseDown}
           onMouseUp={handleMouseUp}
@@ -779,6 +839,7 @@ export default function App() {
           onWheel={handleWheel}
           onContextMenu={handleContextMenu}
         />
+        </div>
 
         {/* Right Panel */}
         <div style={S.rightPanel}>
