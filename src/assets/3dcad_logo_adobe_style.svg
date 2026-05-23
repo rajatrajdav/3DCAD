@@ -1,0 +1,61 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 500 500" width="500" height="500">
+  <defs>
+    <linearGradient id="bgCard" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#1a2744"/>
+      <stop offset="100%" stop-color="#0d1a2e"/>
+    </linearGradient>
+    <linearGradient id="topEdge" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#3a6fff"/>
+      <stop offset="100%" stop-color="#00c8ff"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Rounded square card — Adobe style -->
+  <rect x="30" y="30" width="440" height="440" rx="72" fill="url(#bgCard)"/>
+
+  <!-- Top accent bar (like Adobe's color band) -->
+  <rect x="30" y="30" width="440" height="10" rx="5" fill="url(#topEdge)"/>
+  <rect x="30" y="34" width="440" height="6" rx="0" fill="url(#topEdge)"/>
+
+  <!-- Isometric 3D cube — large, centered, top half -->
+  <!-- Top face: bright blue -->
+  <polygon points="250,110 370,175 250,240 130,175" fill="#3a7fff"/>
+  <!-- Right face: mid blue -->
+  <polygon points="370,175 370,305 250,370 250,240" fill="#1a4fa8"/>
+  <!-- Left face: dark blue -->
+  <polygon points="130,175 130,305 250,370 250,240" fill="#0d2d6e"/>
+
+  <!-- Face edge highlights -->
+  <polyline points="130,175 250,110 370,175" fill="none" stroke="#7ab8ff" stroke-width="2.5" stroke-linejoin="round"/>
+  <line x1="130" y1="175" x2="130" y2="305" stroke="#1a3a6a" stroke-width="1.2"/>
+  <line x1="370" y1="175" x2="370" y2="305" stroke="#1a3a6a" stroke-width="1.2"/>
+  <polyline points="130,305 250,370 370,305" fill="none" stroke="#1a3a6a" stroke-width="1.2"/>
+
+  <!-- Inner edge lines on top face for depth -->
+  <line x1="250" y1="110" x2="250" y2="240" stroke="#7ab8ff" stroke-width="0.8" opacity="0.35"/>
+  <line x1="190" y1="142" x2="310" y2="142" stroke="#7ab8ff" stroke-width="0.6" opacity="0.2"/>
+  <line x1="190" y1="207" x2="310" y2="207" stroke="#7ab8ff" stroke-width="0.6" opacity="0.2"/>
+
+  <!-- Hidden back edge dashed -->
+  <line x1="250" y1="240" x2="250" y2="370" stroke="#1a3a6a" stroke-width="1" stroke-dasharray="6 4"/>
+
+  <!-- Glowing teal corner nodes -->
+  <circle cx="250" cy="110" r="6"  fill="#00e5ff"/>
+  <circle cx="370" cy="175" r="5"  fill="#00c8ff"/>
+  <circle cx="130" cy="175" r="5"  fill="#00c8ff"/>
+  <circle cx="370" cy="305" r="4.5" fill="#0a7aaa"/>
+  <circle cx="130" cy="305" r="4.5" fill="#0a7aaa"/>
+  <circle cx="250" cy="370" r="6"  fill="#00e5ff"/>
+
+  <!-- Center node -->
+  <circle cx="250" cy="240" r="4" fill="#7ab8ff" opacity="0.7"/>
+
+  <!-- Wordmark: bold "3D" bottom -->
+  <text x="250" y="445"
+        font-family="'Arial Black', 'Helvetica Neue', Arial, sans-serif"
+        font-size="52"
+        font-weight="900"
+        fill="#ffffff"
+        text-anchor="middle"
+        letter-spacing="6">3D</text>
+</svg>
