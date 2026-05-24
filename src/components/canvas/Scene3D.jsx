@@ -1,13 +1,50 @@
 import React, { useRef, useEffect } from 'react';
 import { OrbitControls, Grid, Environment, GizmoHelper, GizmoViewcube, TransformControls } from '@react-three/drei';
 
-function SceneObject({ obj, selected, onSelect, transformMode }) {
+function SceneObject({ obj, selected, onSelect, transformMode, onObjectUpdate, readOnly, orbitControlsRef }) {
   const meshRef = useRef();
+  const controlRef = useRef();
+  const pendingUpdate = useRef(null);
   const color = obj.color || '#63b3ed';
   const { position, rotation, scale } = obj;
   const pos = [position.x, position.y, position.z];
   const rot = [rotation.x, rotation.y, rotation.z];
   const scl = [scale.x, scale.y, scale.z];
+
+  useEffect(() => {
+    const ctrl = controlRef.current;
+    const mesh = meshRef.current;
+    if (!ctrl || !mesh) return;
+
+    const handleChange = () => {
+      if (!mesh) return;
+      pendingUpdate.current = {
+        position: { x: mesh.position.x, y: mesh.position.y, z: mesh.position.z },
+        rotation: { x: mesh.rotation.x, y: mesh.rotation.y, z: mesh.rotation.z },
+        scale:    { x: mesh.scale.x,    y: mesh.scale.y,    z: mesh.scale.z },
+      };
+    };
+
+    const handleDraggingChanged = (event) => {
+      if (!orbitControlsRef?.current) return;
+      orbitControlsRef.current.enabled = !event.value;
+      if (!event.value && pendingUpdate.current) {
+        onObjectUpdate?.(obj.id, pendingUpdate.current);
+        pendingUpdate.current = null;
+      }
+    };
+
+    ctrl.addEventListener('change', handleChange);
+    ctrl.addEventListener('dragging-changed', handleDraggingChanged);
+    ctrl.attach(mesh);
+
+    return () => {
+      ctrl.removeEventListener('change', handleChange);
+      ctrl.removeEventListener('dragging-changed', handleDraggingChanged);
+      ctrl.detach();
+      pendingUpdate.current = null;
+    };
+  }, [obj.id, onObjectUpdate, orbitControlsRef, selected, transformMode]);
 
   const geometry = () => {
     switch (obj.type) {
@@ -21,8 +58,8 @@ function SceneObject({ obj, selected, onSelect, transformMode }) {
   };
 
   return (
-    <group ref={meshRef} position={pos} rotation={rot} scale={scl}>
-      <mesh castShadow receiveShadow onClick={(e) => { e.stopPropagation(); onSelect(obj.id); }}>
+    <>
+      <mesh ref={meshRef} position={pos} rotation={rot} scale={scl} castShadow receiveShadow onClick={(e) => { e.stopPropagation(); onSelect(obj.id); }}>
         {geometry()}
         <meshStandardMaterial 
           color={color} 
@@ -32,19 +69,16 @@ function SceneObject({ obj, selected, onSelect, transformMode }) {
           emissiveIntensity={selected ? 0.15 : 0}
         />
       </mesh>
-      {selected && transformMode && (
-        <TransformControls mode={transformMode} size={0.5}>
-          <mesh>
-            {geometry()}
-            <meshBasicMaterial color={color} wireframe opacity={0.3} transparent />
-          </mesh>
-        </TransformControls>
+      {selected && !readOnly && transformMode && (
+        <TransformControls ref={controlRef} mode={transformMode} />
       )}
-    </group>
+    </>
   );
 }
 
-export default function Scene3D({ objects, selectedId, onSelect, onObjectUpdate, readOnly = false, transformMode = "translate" }) {
+export default function Scene3D({ objects, selectedId, onSelect, onObjectUpdate, readOnly = false, transformMode = null }) {
+  const orbitControlsRef = useRef();
+
   return (
     <>
       <Lighting />
@@ -76,9 +110,12 @@ export default function Scene3D({ objects, selectedId, onSelect, onObjectUpdate,
           selected={selectedId === obj.id} 
           onSelect={readOnly ? () => {} : onSelect}
           transformMode={transformMode}
+          onObjectUpdate={onObjectUpdate}
+          readOnly={readOnly}
+          orbitControlsRef={orbitControlsRef}
         />
       ))}
-      <OrbitControls makeDefault enableDamping dampingFactor={0.05} />
+      <OrbitControls ref={orbitControlsRef} makeDefault enableDamping dampingFactor={0.05} />
       <Environment preset="city" />
     </>
   );

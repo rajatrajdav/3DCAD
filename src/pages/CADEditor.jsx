@@ -73,6 +73,9 @@ export default function CADEditor() {
   const [commandInput, setCommandInput] = useState("");
   const [showRibbon, setShowRibbon] = useState(true);
   const [activeRibbonTab, setActiveRibbonTab] = useState("Home");
+  const [activeFileTab, setActiveFileTab] = useState("Drawing1.dwg");
+  const [layoutTab, setLayoutTab] = useState("Model");
+  const [statusInfo, setStatusInfo] = useState("Ready");
   const [ucsIcon, setUcsIcon] = useState(true);
   const [isDragging, setIsDragging] = useState(false);
   const [dragStart, setDragStart] = useState(null);
@@ -118,6 +121,12 @@ export default function CADEditor() {
   const toScreen = useCallback((wx, wy) => ({ x: wx * zoom + pan.x, y: wy * zoom + pan.y }), [pan, zoom]);
   const nextId = () => { idRef.current += 1; return idRef.current; };
   const logCommand = (msg) => setCommandLog(prev => [...prev.slice(-49), msg]);
+
+  const update3DObject = useCallback((id, updates) => {
+    setEntities3D(prev => prev.map(obj => obj.id === id ? { ...obj, ...updates } : obj));
+  }, []);
+
+  const sceneTransformMode = activeTool === 'rotate' ? 'rotate' : activeTool === 'scale' ? 'scale' : activeTool === 'move' ? 'translate' : null;
 
   const pushHistory = (items) => {
     const h = history.slice(0, historyIdx + 1);
@@ -318,7 +327,7 @@ export default function CADEditor() {
       setTransformStart(wp);
       setEntities2D((prev) => prev.map(ent => {
         if (ent.id !== transformId) return ent;
-        if (activeTool === "move") {
+        if (activeTool === "move" || activeTool === "copy") {
           if (ent.type === "line" || ent.type === "dimension") {
             return { ...ent, x1: ent.x1 + delta.x, y1: ent.y1 + delta.y, x2: ent.x2 + delta.x, y2: ent.y2 + delta.y };
           }
@@ -331,20 +340,32 @@ export default function CADEditor() {
           if (ent.type === "polyline" || ent.type === "spline") {
             return { ...ent, points: ent.points.map(p => ({ x: p.x + delta.x, y: p.y + delta.y })) };
           }
-        }
-        if (activeTool === "copy") {
-          return ent; // copy handled at start of transform
+          return ent;
         }
         if (activeTool === "rotate") {
-          const angle = Math.atan2(wp.y - ent.cy, wp.x - ent.cx) - Math.atan2(transformStart.y - ent.cy, transformStart.x - ent.cx);
           if (ent.type === "line" || ent.type === "dimension") {
+            const cx = (ent.x1 + ent.x2) / 2;
+            const cy = (ent.y1 + ent.y2) / 2;
+            const angle = Math.atan2(wp.y - cy, wp.x - cx) - Math.atan2(transformStart.y - cy, transformStart.x - cx);
             const rotatePoint = (x, y) => {
-              const dx = x - ent.cx; const dy = y - ent.cy;
-              return { x: ent.cx + dx * Math.cos(angle) - dy * Math.sin(angle), y: ent.cy + dx * Math.sin(angle) + dy * Math.cos(angle) };
+              const dx = x - cx; const dy = y - cy;
+              return { x: cx + dx * Math.cos(angle) - dy * Math.sin(angle), y: cy + dx * Math.sin(angle) + dy * Math.cos(angle) };
             };
-            const a = rotatePoint(ent.x1, ent.y1); const b = rotatePoint(ent.x2, ent.y2);
+            const a = rotatePoint(ent.x1, ent.y1);
+            const b = rotatePoint(ent.x2, ent.y2);
             return { ...ent, x1: a.x, y1: a.y, x2: b.x, y2: b.y };
           }
+          if (ent.type === "polyline" || ent.type === "spline") {
+            const cx = ent.points.reduce((sum, p) => sum + p.x, 0) / ent.points.length;
+            const cy = ent.points.reduce((sum, p) => sum + p.y, 0) / ent.points.length;
+            const angle = Math.atan2(wp.y - cy, wp.x - cx) - Math.atan2(transformStart.y - cy, transformStart.x - cx);
+            const rotatePoint = (x, y) => {
+              const dx = x - cx; const dy = y - cy;
+              return { x: cx + dx * Math.cos(angle) - dy * Math.sin(angle), y: cy + dx * Math.sin(angle) + dy * Math.cos(angle) };
+            };
+            return { ...ent, points: ent.points.map(p => rotatePoint(p.x, p.y)) };
+          }
+          return ent;
         }
         if (activeTool === "scale") {
           const scale = Math.max(0.1, 1 + (wp.x - transformStart.x) * 0.01);
@@ -545,6 +566,20 @@ export default function CADEditor() {
   }, [selectedIds, entities2D, historyIdx]);
 
   const commandActions = {
+    // File operations
+    new: () => { setEntities2D([]); setEntities3D([]); logCommand("New drawing created"); },
+    open: () => { logCommand("Open dialog"); },
+    save: () => { saveProjectData(session.id, id, { entities_2d: entities2D, entities_3d: entities3D }); logCommand("Saved project"); },
+    export: () => {
+      const dxf = exportToDXF(entities2D);
+      const blob = new Blob([dxf], { type: 'application/dxf' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a'); a.href = url; a.download = `${project?.name || 'drawing'}.dxf`; a.click();
+      logCommand("Exported DXF");
+    },
+    print: () => { window.print(); logCommand("Print dialog"); },
+    
+    // Drawing tools
     line: () => setActiveTool("line"),
     circle: () => setActiveTool("circle"),
     rect: () => setActiveTool("rectangle"),
@@ -554,24 +589,66 @@ export default function CADEditor() {
     arc: () => setActiveTool("arc"),
     ellipse: () => setActiveTool("ellipse"),
     text: () => setActiveTool("text"),
+    mtext: () => setActiveTool("text"),
     dimension: () => setActiveTool("dimension"),
+    linear: () => setActiveTool("dimension"),
+    angular: () => setActiveTool("dimension"),
+    radius: () => setActiveTool("dimension"),
+    leader: () => setActiveTool("leader"),
+    qleader: () => setActiveTool("leader"),
+    mleader: () => setActiveTool("leader"),
+    
+    // Modify tools
     erase: () => setActiveTool("erase"),
     move: () => setActiveTool("move"),
     copy: () => setActiveTool("copy"),
     rotate: () => setActiveTool("rotate"),
     scale: () => setActiveTool("scale"),
+    mirror: () => setActiveTool("mirror"),
+    offset: () => setActiveTool("offset"),
+    array: () => setActiveTool("array"),
+    stretch: () => setActiveTool("stretch"),
+    trim: () => setActiveTool("trim"),
+    extend: () => setActiveTool("extend"),
+    break: () => setActiveTool("break"),
+    join: () => setActiveTool("join"),
+    fillet: () => setActiveTool("fillet"),
+    chamfer: () => setActiveTool("chamfer"),
+    
+    // View tools
     zoom: () => { setZoom(1); setPan({ x: canvasSize.w / 2, y: canvasSize.h / 2 }); },
     pan: () => setActiveTool("pan"),
+    orbit: () => setActiveTool("orbit"),
+    walk: () => setActiveTool("walk"),
+    top: () => { logCommand("Top view"); },
+    front: () => { logCommand("Front view"); },
+    right: () => { logCommand("Right view"); },
+    iso: () => { logCommand("Isometric view"); },
+    wireframe: () => { logCommand("Wireframe mode"); },
+    hidden: () => { logCommand("Hidden line mode"); },
+    realistic: () => { logCommand("Realistic mode"); },
+    shaded: () => { logCommand("Shaded mode"); },
+    grid: () => setGridEnabled(g => !g),
+    snap: () => setSnapEnabled(s => !s),
+    ortho: () => setOrthoMode(o => !o),
+    polar: () => setPolarMode(p => !p),
+    
+    // Layer and properties
+    layer: () => { logCommand("Layer manager"); },
+    properties: () => { logCommand("Properties panel"); },
+    
+    // Block operations
+    block: () => { logCommand("Create block"); },
+    insert: () => { logCommand("Insert block"); },
+    wblock: () => { logCommand("Write block"); },
+    
+    // Utilities
+    measure: () => setActiveTool("measure"),
+    calculator: () => { logCommand("Calculator"); },
+    
+    // Standard commands
     undo: undo,
     redo: redo,
-    save: () => { saveProjectData(session.id, id, { entities_2d: entities2D, entities_3d: entities3D }); logCommand("Saved project"); },
-    export: () => {
-      const dxf = exportToDXF(entities2D);
-      const blob = new Blob([dxf], { type: 'application/dxf' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a'); a.href = url; a.download = `${project?.name || 'drawing'}.dxf`; a.click();
-      logCommand("Exported DXF");
-    }
   };
 
   const handleCommand = (e) => {
@@ -583,21 +660,48 @@ export default function CADEditor() {
   };
 
   const S = {
-    app: { display: "flex", flexDirection: "column", width: "100vw", height: "100vh", background: "#0d1117", color: "#c9d1d9", fontFamily: "'Segoe UI', sans-serif", overflow: "hidden" },
-    menuBar: { display: "flex", alignItems: "center", background: "#1a2035", borderBottom: "1px solid #2a3248", height: 28, paddingLeft: 8, gap: 2, fontSize: 12, flexShrink: 0 },
-    ribbon: { display: "flex", flexDirection: "column", background: "#1c2540", borderBottom: "1px solid #1e2d4a", flexShrink: 0 },
-    ribbonTabs: { display: "flex", borderBottom: "1px solid #1e2d4a", paddingLeft: 4 },
-    ribbonTab: (active) => ({ padding: "5px 16px", cursor: "pointer", fontSize: 11.5, fontWeight: active ? 600 : 400, color: active ? "#4fc3f7" : "#7a8ba0", borderBottom: active ? "2px solid #4fc3f7" : "2px solid transparent" }),
-    ribbonItems: { display: "flex", flexWrap: "wrap", gap: 4, padding: "4px 8px" },
-    workspace: { display: "flex", flex: 1, overflow: "hidden" },
-    viewport: { flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" },
-    canvas: { flex: 1, display: "block" },
-    rightPanel: { width: 260, background: "#111827", borderLeft: "1px solid #1e2d4a", display: "flex", flexDirection: "column", overflow: "hidden", flexShrink: 0 },
-    cmdBar: { background: "#0d1117", borderTop: "1px solid #1e2d4a", padding: "4px 8px", display: "flex", gap: 8, flexShrink: 0 },
-    cmdInput: { background: "#1a2035", border: "1px solid #2a3248", borderRadius: 3, color: "#e2e8f0", fontSize: 12, padding: "3px 8px", flex: 1, outline: "none" },
-    statusBar: { display: "flex", alignItems: "center", background: "#0a0f1a", borderTop: "1px solid #1e2d4a", height: 24, paddingLeft: 8, gap: 16, fontSize: 11, color: "#5a6a7a", flexShrink: 0 },
-    toolBtn: (active, tid) => ({ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", width: 42, height: 42, background: active ? "#1a2545" : "transparent", border: active ? `1px solid ${TOOL_GROUPS[TOOLS.find(t => t.id===tid)?.group]?.color || '#4fc3f7'}` : "1px solid #2a3248", borderRadius: 5, cursor: "pointer", color: active ? "#4fc3f7" : "#8090aa", gap: 2, minWidth: 42 }),
-    panelHeader: { padding: "8px 12px", fontSize: 11, fontWeight: 600, color: "#4fc3f7", background: "#0d1421", borderBottom: "1px solid #1e2d4a" },
+    app: { display: "flex", flexDirection: "column", width: "100vw", height: "100vh", background: "#0b101b", color: "#d8e9ff", fontFamily: "'Segoe UI', sans-serif", overflow: "hidden" },
+    menuBar: { display: "flex", alignItems: "center", justifyContent: "space-between", background: "#131a2c", borderBottom: "1px solid #334168", height: 34, padding: "0 10px", gap: 8, fontSize: 12, flexShrink: 0 },
+    appTitle: { display: "flex", alignItems: "center", gap: 10, color: "#d4e7ff", fontWeight: 700, letterSpacing: "0.04em", textTransform: "uppercase" },
+    appButton: { display: "grid", placeItems: "center", width: 26, height: 26, borderRadius: 5, border: "1px solid #2e4164", background: "#0f1830", color: "#8db8ff", cursor: "pointer" },
+    quickAccess: { display: "flex", alignItems: "center", gap: 4 },
+    quickButton: (active) => ({ width: 28, height: 28, borderRadius: 5, border: "1px solid #2d3a5f", background: active ? "#0f57d1" : "#0f1830", color: active ? "#e4f3ff" : "#9bb5d9", display: "grid", placeItems: "center", cursor: "pointer" }),
+    fileTabs: { display: "flex", alignItems: "center", gap: 2, padding: "4px 10px", minHeight: 30, background: "#101826", borderBottom: "1px solid #2e4167" },
+    fileTab: (active) => ({ padding: "5px 16px", borderRadius: "5px 5px 0 0", background: active ? "#0f4ec8" : "transparent", color: active ? "#eef6ff" : "#9cb5df", cursor: "pointer", fontSize: 11, border: active ? "1px solid #1d4db5" : "1px solid transparent", borderBottom: active ? "none" : "1px solid transparent" }),
+    workspaceTabs: { display: "flex", alignItems: "center", gap: 2, padding: "0 10px", minHeight: 30, background: "#101826", borderBottom: "1px solid #2d3e6a" },
+    workspaceTab: (active) => ({ padding: "6px 14px", cursor: "pointer", borderRadius: active ? "6px 6px 0 0" : 6, background: active ? "#0f4ec8" : "transparent", color: active ? "#eef6ff" : "#9ab4d6", fontSize: 11, fontWeight: active ? 700 : 500 }),
+    infoBar: { display: "flex", alignItems: "center", justifyContent: "space-between", padding: "6px 12px", background: "#101826", borderBottom: "1px solid #243360", color: "#8da4c6", fontSize: 11 },
+    ribbon: { display: "flex", flexDirection: "column", background: "linear-gradient(180deg,#1b243f,#111827)", borderBottom: "1px solid #263a62", flexShrink: 0, color: "#d8ebff" },
+    ribbonTabs: { display: "flex", alignItems: "center", padding: "6px 10px", gap: 2, borderBottom: "1px solid #293959" },
+    ribbonTab: (active) => ({ padding: "8px 18px", cursor: "pointer", fontSize: 12, fontWeight: active ? 700 : 500, color: active ? "#ffffff" : "#a5b8d8", background: active ? "#0f4ec8" : "transparent", borderRadius: active ? "6px 6px 0 0" : 6 }),
+    ribbonQuick: { display: "flex", alignItems: "center", gap: 4, marginLeft: "auto" },
+    ribbonContent: { display: "flex", gap: 2, padding: "8px 12px", overflowX: "auto", background: "linear-gradient(180deg, #1e2a47, #151f37)" },
+    ribbonGroup: { display: "flex", flexDirection: "column", gap: 6, background: "transparent", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 6, minWidth: 140, padding: "8px 6px", borderBottom: "2px solid #0f4ec8" },
+    ribbonGroupLarge: { display: "flex", flexDirection: "column", gap: 6, background: "transparent", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 6, minWidth: 180, padding: "8px 6px", borderBottom: "2px solid #0f4ec8" },
+    ribbonGroupHeader: { fontSize: 9, color: "#6b8bb3", letterSpacing: "0.08em", textTransform: "uppercase", fontWeight: 600, display: "flex", alignItems: "center", justifyContent: "space-between", paddingBottom: 4, borderBottom: "1px solid rgba(255,255,255,0.06)" },
+    ribbonTools: { display: "flex", flexWrap: "wrap", gap: 3, justifyContent: "flex-start" },
+    ribbonToolsLarge: { display: "flex", gap: 4, justifyContent: "center" },
+    ribbonButton: (active) => ({ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 3, padding: "6px 4px", background: active ? "#0f4ec8" : "rgba(255,255,255,0.03)", border: active ? "1px solid #2971d5" : "1px solid rgba(255,255,255,0.08)", borderRadius: 4, color: active ? "#ffffff" : "#b1c3e0", cursor: "pointer", minHeight: 60, minWidth: 42, textAlign: "center", transition: "all 0.15s ease" }),
+    ribbonButtonLarge: (active) => ({ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 6, padding: "12px 8px", background: active ? "#0f4ec8" : "rgba(255,255,255,0.05)", border: active ? "1px solid #2971d5" : "1px solid rgba(255,255,255,0.1)", borderRadius: 6, color: active ? "#ffffff" : "#b1c3e0", cursor: "pointer", minHeight: 80, minWidth: 70, textAlign: "center", transition: "all 0.15s ease" }),
+    ribbonButtonIcon: { width: 28, height: 28, display: "grid", placeItems: "center", borderRadius: 4, background: "rgba(255,255,255,0.08)" },
+    ribbonButtonIconLarge: { width: 40, height: 40, display: "grid", placeItems: "center", borderRadius: 6, background: "rgba(255,255,255,0.1)" },
+    workspace: { display: "flex", flex: 1, overflow: "hidden", position: "relative" },
+    viewport: { flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", position: "relative" },
+    viewportOverlay: { position: "absolute", right: 14, top: 14, display: "flex", flexDirection: "column", gap: 8, zIndex: 10 },
+    overlayButton: { width: 42, height: 42, borderRadius: 10, border: "1px solid rgba(255,255,255,0.08)", background: "rgba(15,24,56,0.85)", color: "#dbe8ff", display: "grid", placeItems: "center", cursor: "pointer" },
+    rightPanel: { width: 280, background: "#101826", borderLeft: "1px solid #1f2d53", display: "flex", flexDirection: "column", overflow: "hidden", flexShrink: 0 },
+    cmdBar: { background: "#0e1728", borderTop: "1px solid #213458", padding: "8px 10px", display: "flex", gap: 10, alignItems: "center", flexShrink: 0 },
+    cmdLabel: { fontSize: 11, color: "#78a1d1", minWidth: 70 },
+    cmdInput: { background: "#14203b", border: "1px solid #2f476f", borderRadius: 4, color: "#e4f2ff", fontSize: 12, padding: "8px 12px", flex: 1, outline: "none" },
+    statusBar: { display: "flex", alignItems: "center", background: "#0a1322", borderTop: "1px solid #23335f", minHeight: 30, padding: "0 10px", gap: 16, fontSize: 11, color: "#7f9dc7", flexShrink: 0 },
+    statusLeft: { display: "flex", alignItems: "center", gap: 10 },
+    statusGroup: { display: "flex", alignItems: "center", gap: 8 },
+    statusTag: (active) => ({ padding: "4px 8px", borderRadius: 5, border: active ? "1px solid #3f7eea" : "1px solid #23355c", background: active ? "rgba(63,126,234,0.18)" : "#101826", color: active ? "#e8f5ff" : "#8da4c6", fontSize: 10, cursor: "pointer" }),
+    layoutTabs: { display: "flex", alignItems: "center", gap: 4 },
+    layoutTab: (active) => ({ padding: "4px 9px", borderRadius: 4, background: active ? "#0f4ec8" : "#121a30", color: active ? "#eef6ff" : "#9cb5df", fontSize: 11, cursor: "pointer" }),
+    statusAccent: { color: "#8ec9ff", fontFamily: "'Courier New', monospace", fontSize: 10 },
+    toolBtn: (active, tid) => ({ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 4, padding: "10px 8px", background: active ? "#0f4ec8" : "#121d36", border: active ? `1px solid #2971d5` : "1px solid #1f2c4f", borderRadius: 6, cursor: "pointer", color: active ? "#ffffff" : "#b0c1dc", minWidth: 64, minHeight: 76, textAlign: "center" }),
+    panelHeader: { padding: "10px 14px", fontSize: 12, fontWeight: 700, color: "#8ec7ff", background: "#101822", borderBottom: "1px solid #253356" },
   };
 
   const viewportTabs = [
@@ -611,51 +715,162 @@ export default function CADEditor() {
     { label: "View", tools: ["pan", "zoom"] },
   ];
 
+  const RIBBON_TABS = ["File", "Home", "Insert", "Annotate", "Modify", "View", "Manage", "Output"];
+  const RIBBON_GROUPS = {
+    File: [
+      { label: "New", tools: ["new"], large: true },
+      { label: "Open", tools: ["open"], large: true },
+      { label: "Save", tools: ["save"], large: true },
+      { label: "Export", tools: ["export", "print"] },
+    ],
+    Home: [
+      { label: "Draw", tools: ["line", "polyline", "rectangle", "circle", "arc"] },
+      { label: "Modify", tools: ["move", "copy", "rotate", "scale", "mirror"] },
+      { label: "Layers", tools: ["layer", "properties"] },
+      { label: "Block", tools: ["block", "insert"] },
+      { label: "Utilities", tools: ["measure", "calculator"] },
+    ],
+    Insert: [
+      { label: "Block", tools: ["insert", "block", "wblock"] },
+      { label: "Reference", tools: ["attach", "clip", "adjust"] },
+      { label: "Import", tools: ["import", "pdf", "image"] },
+    ],
+    Annotate: [
+      { label: "Text", tools: ["text", "mtext", "style"] },
+      { label: "Dimensions", tools: ["dimension", "linear", "angular", "radius"] },
+      { label: "Leaders", tools: ["leader", "qleader", "mleader"] },
+      { label: "Tables", tools: ["table", "tablestyle"] },
+    ],
+    Modify: [
+      { label: "Modify", tools: ["erase", "copy", "mirror", "offset", "array"] },
+      { label: "Transform", tools: ["move", "rotate", "scale", "stretch"] },
+      { label: "Edit", tools: ["trim", "extend", "break", "join", "fillet", "chamfer"] },
+    ],
+    View: [
+      { label: "Navigate", tools: ["pan", "zoom", "orbit", "walk"] },
+      { label: "Views", tools: ["top", "front", "right", "iso"] },
+      { label: "Visual Styles", tools: ["wireframe", "hidden", "realistic", "shaded"] },
+      { label: "Show", tools: ["grid", "snap", "ortho", "polar"] },
+    ],
+    Manage: [
+      { label: "CAD Standards", tools: ["standards", "check", "configure"] },
+      { label: "Customization", tools: ["cui", "options", "settings"] },
+    ],
+    Output: [
+      { label: "Plot", tools: ["plot", "preview", "batch"] },
+      { label: "Export", tools: ["export", "pdf", "dwf", "image"] },
+      { label: "Publish", tools: ["publish", "transmit", "etransmit"] },
+    ],
+  };
+
   return (
     <div style={S.app}>
       <div style={S.menuBar}>
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <svg width="20" height="20" viewBox="0 0 24 24" stroke="#4fc3f7" strokeWidth="1.5" fill="none"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5" /></svg>
-          <span>3DCAD Studio</span>
+        <div style={S.appTitle}>
+          <button style={S.appButton} title="Application menu">A</button>
+          <div style={{ display: "flex", flexDirection: "column", lineHeight: 1.1 }}>
+            <span style={{ fontSize: 11 }}>AutoCAD UI</span>
+            <span style={{ fontSize: 9, color: "#92b7ff" }}>3DCAD Studio</span>
+          </div>
+          <div style={S.quickAccess}>
+            <button style={S.quickButton(false)} title="Save">💾</button>
+            <button style={S.quickButton(false)} title="Undo">↶</button>
+            <button style={S.quickButton(false)} title="Redo">↷</button>
+            <button style={S.quickButton(false)} title="New">✚</button>
+          </div>
         </div>
-        <div style={{ flex: 1 }} />
-        <button onClick={() => navigate("/projects")} style={{ background: "#1a2545", border: "1px solid #2a3248", color: "#4fc3f7", borderRadius: 3, fontSize: 11, padding: "2px 10px", cursor: "pointer" }}>← Projects</button>
+        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          <button onClick={undo} style={{ background: "transparent", border: "1px solid #22345a", color: "#a2bbdb", borderRadius: 4, fontSize: 11, padding: "4px 8px", cursor: "pointer" }}>Undo</button>
+          <button onClick={redo} style={{ background: "transparent", border: "1px solid #22345a", color: "#a2bbdb", borderRadius: 4, fontSize: 11, padding: "4px 8px", cursor: "pointer" }}>Redo</button>
+          <button onClick={() => navigate("/projects")} style={{ background: "#0f4ec8", border: "1px solid #2a5fd3", color: "#fff", borderRadius: 4, fontSize: 11, padding: "4px 10px", cursor: "pointer" }}>Projects</button>
+        </div>
       </div>
 
-      <div style={{ display: "flex", background: "#1a2035", borderBottom: "1px solid #2a3248", height: 28, paddingLeft: 8, gap: 2 }}>
-        {viewportTabs.map(tab => (
-          <button key={tab.id} onClick={() => setViewport(tab.id)} style={{ background: viewport === tab.id ? "#2a3248" : "transparent", border: "none", color: viewport === tab.id ? "#4fc3f7" : "#7a8ba0", fontSize: 11, padding: "4px 12px", cursor: "pointer", borderBottom: viewport === tab.id ? "2px solid #4fc3f7" : "none" }}>{tab.label}</button>
+      <div style={S.fileTabs}>
+        {[
+          { id: 'start', label: 'Start' },
+          { id: 'drawing', label: activeFileTab },
+          { id: 'sheet1', label: 'Sheet1' },
+        ].map(tab => (
+          <button key={tab.id} onClick={() => setActiveFileTab(tab.label)} style={S.fileTab(activeFileTab === tab.label)}>{tab.label}</button>
         ))}
         <div style={{ flex: 1 }} />
-        <button onClick={undo} style={{ background: "transparent", border: "none", color: "#7a8ba0", cursor: "pointer", padding: 4 }}>↩</button>
-        <button onClick={redo} style={{ background: "transparent", border: "none", color: "#7a8ba0", cursor: "pointer", padding: 4 }}>↪</button>
+        <span style={{ color: "#8da8cf", fontSize: 11 }}>File tabs</span>
       </div>
 
-      {showRibbon && viewport === "2d" && (
+      <div style={S.workspaceTabs}>
+        {viewportTabs.map(tab => (
+          <button key={tab.id} onClick={() => setViewport(tab.id)} style={S.workspaceTab(viewport === tab.id)}>{tab.label}</button>
+        ))}
+        <div style={{ flex: 1 }} />
+        <span style={{ color: "#8da8cf", fontSize: 11 }}>Workspace: {viewport === "2d" ? "Drafting & Annotation" : "3D Modeling"}</span>
+      </div>
+
+      <div style={S.infoBar}>
+        <span>{activeFileTab} — {project?.name || 'Untitled'}</span>
+        <span>{statusInfo}</span>
+        <span>{viewport === '2d' ? `UCS: ${ucsIcon ? 'On' : 'Off'}` : `Objects: ${entities3D.length}`}</span>
+      </div>
+
+      {showRibbon && (viewport === "2d" || viewport === "3d") && (
         <div style={S.ribbon}>
           <div style={S.ribbonTabs}>
-            {[["Home", "Home"], ["View", "View"], ["Annotate", "Annotate"]].map(([tab]) => (
+            {RIBBON_TABS.map(tab => (
               <div key={tab} style={S.ribbonTab(activeRibbonTab === tab)} onClick={() => setActiveRibbonTab(tab)}>{tab}</div>
             ))}
             <div style={{ flex: 1 }} />
-            <div style={{ display: "flex", gap: 4, paddingRight: 8 }}>
-              <button onClick={() => setSnapEnabled(s => !s)} style={{ background: snapEnabled ? "#1a2545" : "transparent", border: snapEnabled ? "1px solid #4fc3f7" : "1px solid #2a3248", color: snapEnabled ? "#4fc3f7" : "#7a8ba0", borderRadius: 3, padding: "2px 6px", fontSize: 9, cursor: "pointer" }}>SNAP</button>
-              <button onClick={() => setGridEnabled(g => !g)} style={{ background: gridEnabled ? "#1a2545" : "transparent", border: gridEnabled ? "1px solid #4fc3f7" : "1px solid #2a3248", color: gridEnabled ? "#4fc3f7" : "#7a8ba0", borderRadius: 3, padding: "2px 6px", fontSize: 9, cursor: "pointer" }}>GRID</button>
-              <button onClick={() => setOrthoMode(o => !o)} style={{ background: orthoMode ? "#1a2545" : "transparent", border: orthoMode ? "1px solid #4fc3f7" : "1px solid #2a3248", color: orthoMode ? "#4fc3f7" : "#7a8ba0", borderRadius: 3, padding: "2px 6px", fontSize: 9, cursor: "pointer" }}>ORTHO</button>
+            <div style={S.ribbonQuick}>
+              <button onClick={() => setSnapEnabled(s => !s)} style={S.quickButton(snapEnabled)} title="Object Snap">SNAP</button>
+              <button onClick={() => setGridEnabled(g => !g)} style={S.quickButton(gridEnabled)} title="Grid Display">GRID</button>
+              <button onClick={() => setOrthoMode(o => !o)} style={S.quickButton(orthoMode)} title="Ortho Mode">ORTHO</button>
+              <button onClick={() => setDynamicInput(d => !d)} style={S.quickButton(dynamicInput)} title="Dynamic Input">DYN</button>
             </div>
           </div>
-          <div style={S.ribbonItems}>
-            {toolbarGroups.map(group => (
-              <div key={group.label} style={{ display: "flex", alignItems: "center", gap: 2 }}>
-                {group.tools.map(tid => {
-                  const tool = TOOLS.find(t => t.id === tid);
-                  return (
-                    <button key={tid} onClick={() => setActiveTool(tid)} title={tool?.label} style={S.toolBtn(activeTool === tid, tid)}>
-                      <Icon d={tool?.icon} size={14} color={activeTool === tid ? TOOL_GROUPS[tool.group]?.color : "#8090aa"} />
-                      <span style={{ fontSize: 7, color: activeTool === tid ? "#cdefff" : "#8090aa" }}>{tool?.label}</span>
-                    </button>
-                  );
-                })}
+          <div style={S.ribbonContent}>
+            {(RIBBON_GROUPS[activeRibbonTab] || RIBBON_GROUPS.Home).map(group => (
+              <div key={group.label} style={group.large ? S.ribbonGroupLarge : S.ribbonGroup}>
+                <div style={S.ribbonGroupHeader}>
+                  <span>{group.label}</span>
+                  <Icon d="M19 9l-7 7-7-7" size={12} color="#6b8bb3" />
+                </div>
+                <div style={group.large ? S.ribbonToolsLarge : S.ribbonTools}>
+                  {group.tools.map(tid => {
+                    const tool = TOOLS.find(t => t.id === tid);
+                    const isCommandAction = typeof commandActions?.[tid] === 'function';
+                    const active = activeTool === tid;
+                    const isLarge = group.large || ['new', 'open', 'save'].includes(tid);
+                    return (
+                      <button
+                        key={tid}
+                        onClick={() => isCommandAction ? commandActions[tid]() : setActiveTool(tid)}
+                        title={tool?.label || tid.charAt(0).toUpperCase() + tid.slice(1)}
+                        style={isLarge ? S.ribbonButtonLarge(active) : S.ribbonButton(active)}
+                      >
+                        <div style={isLarge ? S.ribbonButtonIconLarge : S.ribbonButtonIcon}>
+                          {tool?.icon ? (
+                            <Icon d={tool.icon} size={isLarge ? 24 : 16} color={active ? "#ffffff" : "#aac2ff"} />
+                          ) : (
+                            <span style={{ fontSize: isLarge ? 20 : 14, fontWeight: 'bold' }}>
+                              {tid === 'new' ? '📄' : tid === 'open' ? '📂' : tid === 'save' ? '💾' : 
+                               tid === 'export' ? '📤' : tid === 'print' ? '🖨️' : tid === 'layer' ? '📋' : 
+                               tid === 'properties' ? '⚙️' : tid === 'block' ? '🧩' : tid === 'insert' ? '➕' :
+                               tid === 'measure' ? '📏' : tid === 'calculator' ? '🧮' : tid.slice(0, 2).toUpperCase()}
+                            </span>
+                          )}
+                        </div>
+                        <span style={{ 
+                          fontSize: isLarge ? 11 : 9, 
+                          color: active ? "#ffffff" : "#b5c6e3", 
+                          lineHeight: 1.2,
+                          textAlign: 'center',
+                          fontWeight: isLarge ? 600 : 400
+                        }}>
+                          {tool?.label || tid.charAt(0).toUpperCase() + tid.slice(1)}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
               </div>
             ))}
           </div>
@@ -677,12 +892,22 @@ export default function CADEditor() {
                 onWheel={handleWheel}
                 onContextMenu={handleContextMenu}
               />
+              <div style={S.viewportOverlay}>
+                <button style={S.overlayButton} title="View Cube">🧭</button>
+                <button style={S.overlayButton} title="Navigation Bar">⎋</button>
+              </div>
             </div>
           )}
           {viewport === "3d" && (
             <Canvas shadows camera={{ position: [5, 5, 5], fov: 55 }} style={{ background: "#060b16" }}>
               <Suspense fallback={null}>
-                <Scene3D objects={entities3D} selectedId={selectedId3D} onSelect={setSelectedId3D} transformMode={activeTool === "rotate" ? "rotate" : activeTool === "scale" ? "scale" : "translate"} />
+                <Scene3D
+                  objects={entities3D}
+                  selectedId={selectedId3D}
+                  onSelect={setSelectedId3D}
+                  onObjectUpdate={update3DObject}
+                  transformMode={sceneTransformMode}
+                />
               </Suspense>
             </Canvas>
           )}
@@ -742,15 +967,28 @@ export default function CADEditor() {
       </div>
 
       <div style={S.cmdBar}>
-        <span style={{ fontSize: 11, color: "#3a4a5a" }}>Command:</span>
-        <input style={S.cmdInput} value={commandInput} onChange={e => setCommandInput(e.target.value)} onKeyDown={handleCommand} placeholder="line, circle, rect, erase, move, copy, rotate, scale, export, undo" autoComplete="off" spellCheck="false" />
+        <span style={S.cmdLabel}>Command:</span>
+        <input style={S.cmdInput} value={commandInput} onChange={e => setCommandInput(e.target.value)} onKeyDown={handleCommand} placeholder="Type a command or press Enter" autoComplete="off" spellCheck="false" />
       </div>
 
       <div style={S.statusBar}>
-        <span style={{ color: "#4fc3f7", fontFamily: "'Courier New', monospace", fontSize: 10 }}>{viewport === "2d" ? `X: ${worldCursor.x.toFixed(2)}  Y: ${worldCursor.y.toFixed(2)}` : `3D objects: ${entities3D.length}`}</span>
+        <div style={S.statusLeft}>
+          <span style={S.statusAccent}>{viewport === "2d" ? `X: ${worldCursor.x.toFixed(2)} Y: ${worldCursor.y.toFixed(2)}` : `3D objects: ${entities3D.length}`}</span>
+          <span style={S.statusAccent}>Tool: {activeTool.toUpperCase()}</span>
+          <span style={S.statusAccent}>Zoom: {(zoom * 100).toFixed(0)}%</span>
+        </div>
         <div style={{ flex: 1 }} />
-        <span style={{ color: "#3a4a5a" }}>Tool: <span style={{ color: "#4fc3f7" }}>{activeTool.toUpperCase()}</span></span>
-        <span style={{ color: "#3a4a5a" }}>Zoom: {(zoom * 100).toFixed(0)}%</span>
+        <div style={S.statusGroup}>
+          {['Snap', 'Grid', 'Ortho', 'Dyn'].map((name, index) => {
+            const active = name === 'Snap' ? snapEnabled : name === 'Grid' ? gridEnabled : name === 'Ortho' ? orthoMode : dynamicInput;
+            return <span key={name} style={S.statusTag(active)}>{name}</span>;
+          })}
+        </div>
+        <div style={S.layoutTabs}>
+          {['Model', 'Layout1', 'Layout2'].map(name => (
+            <button key={name} onClick={() => setLayoutTab(name)} style={S.layoutTab(layoutTab === name)}>{name}</button>
+          ))}
+        </div>
       </div>
     </div>
   );
