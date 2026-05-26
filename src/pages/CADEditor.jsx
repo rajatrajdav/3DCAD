@@ -20,8 +20,7 @@ const LAYERS_DEF = [
   { id: 6, name: "Furniture",   color: "#33cc66", visible: true, locked: false, frozen: false, children: [] },
 ];
 
-// Scene hierarchy node
-const mkNode = (id, name, type, parentId = null) => ({ id, name, type, parentId, children: [], visible: true, locked: false });
+const mkNode = (id, name, type, parentId = null) => ({ id, name, type, parentId, children: [], visible: true, locked: false, selectable: true });
 
 // ── ASSET LIBRARY ──────────────────────────────────────────────────────────
 const ASSET_LIBRARY = {
@@ -76,13 +75,13 @@ const MATERIALS = {
   Brick:    { color: "#B22222", roughness: 0.95, metalness: 0.0, opacity: 1.0, emissive: "#000000"},
 };
 
-// ── LIGHT PRESETS ──────────────────────────────────────────────────────────
+// ── LIGHT TYPES ────────────────────────────────────────────────────────────
 const LIGHT_TYPES = ["point", "spot", "directional", "sun", "ambient"];
 
 // ── 3D OBJECT DEFAULTS ─────────────────────────────────────────────────────
 const OBJ3D_DEFAULTS = {
   box3d:        { w: 60,  h: 60,   d: 60,   color: "#4488cc" },
-  sphere3d:     { r: 40,             color: "#cc4444" },
+  sphere3d:     { r: 40,           color: "#cc4444" },
   cylinder3d:   { r: 30,  h: 80,   color: "#44cc88" },
   cone3d:       { r: 40,  h: 80,   color: "#ccaa44" },
   torus3d:      { r: 40,  tube: 12, color: "#cc44cc" },
@@ -92,7 +91,7 @@ const OBJ3D_DEFAULTS = {
   capsule3d:    { r: 20,  h: 80,   color: "#ff8844" },
 };
 
-// ── Math helpers ─────────────────────────────────────────────────────────
+// ── Math helpers ───────────────────────────────────────────────────────────
 const snapG = (pt, size = GRID) => ({ x: Math.round(pt.x / size) * size, y: Math.round(pt.y / size) * size });
 const ortho = (a, b, on) => {
   if (!on) return b;
@@ -116,9 +115,152 @@ function hitTest2D(e, pt, tol) {
   return false;
 }
 
+// ── 3D Projection helper ───────────────────────────────────────────────────
+function project3D(x, y, z, camAngle, camPitch, camDist, W, H) {
+  const ca = Math.cos(camAngle), sa = Math.sin(camAngle);
+  const cp = Math.cos(camPitch), sp = Math.sin(camPitch);
+  const rx = x * ca - z * sa;
+  const ry = x * sa + z * ca;
+  const rz = y * cp - ry * sp;
+  const ry2 = y * sp + ry * cp;
+  const fov = camDist;
+  const pz = ry2 + fov;
+  if (pz <= 0) return { x: W / 2, y: H / 2, z: -1, scale: 0 };
+  const scale = fov / pz;
+  return { x: W / 2 + rx * scale, y: H / 2 - rz * scale, z: pz, scale };
+}
+
+// ── Draw Transform Gizmo on Canvas ────────────────────────────────────────
+function drawTransformGizmo(ctx, obj, camAngle, camPitch, camDist, W, H, transformMode, hoveredGizmoAxis) {
+  const cx = obj.x, cy = obj.y || 0, cz = obj.z;
+  const center = project3D(cx, cy, cz, camAngle, camPitch, camDist, W, H);
+  if (center.z < 0) return;
+
+  const AXIS_LEN = 70;
+  const axes = [
+    { key: "x", dx: AXIS_LEN, dy: 0, dz: 0, color: "#ff4444", hoverColor: "#ff8888", label: "X" },
+    { key: "y", dx: 0, dy: -AXIS_LEN, dz: 0, color: "#44dd44", hoverColor: "#88ff88", label: "Y" },
+    { key: "z", dx: 0, dy: 0, dz: AXIS_LEN, color: "#4488ff", hoverColor: "#88aaff", label: "Z" },
+  ];
+
+  ctx.save();
+
+  if (transformMode === "move" || transformMode === "scale") {
+    axes.forEach(ax => {
+      const tip = project3D(cx + ax.dx * 0.4, cy + ax.dy * 0.4, cz + ax.dz * 0.4, camAngle, camPitch, camDist, W, H);
+      if (tip.z < 0) return;
+      const isHovered = hoveredGizmoAxis === ax.key;
+      const col = isHovered ? ax.hoverColor : ax.color;
+
+      ctx.strokeStyle = col;
+      ctx.lineWidth = isHovered ? 3 : 2;
+      ctx.beginPath();
+      ctx.moveTo(center.x, center.y);
+      ctx.lineTo(tip.x, tip.y);
+      ctx.stroke();
+
+      if (transformMode === "move") {
+        // Arrow head
+        const angle = Math.atan2(tip.y - center.y, tip.x - center.x);
+        ctx.fillStyle = col;
+        ctx.beginPath();
+        ctx.moveTo(tip.x, tip.y);
+        ctx.lineTo(tip.x - 10 * Math.cos(angle - 0.4), tip.y - 10 * Math.sin(angle - 0.4));
+        ctx.lineTo(tip.x - 10 * Math.cos(angle + 0.4), tip.y - 10 * Math.sin(angle + 0.4));
+        ctx.closePath();
+        ctx.fill();
+      } else {
+        // Scale box
+        ctx.fillStyle = col;
+        ctx.fillRect(tip.x - 5, tip.y - 5, 10, 10);
+      }
+
+      // Label
+      ctx.fillStyle = col;
+      ctx.font = "bold 11px monospace";
+      ctx.fillText(ax.label, tip.x + 4, tip.y - 4);
+    });
+
+    // Center dot
+    ctx.fillStyle = isHovered => "#ffffff";
+    ctx.fillStyle = "#ffffff";
+    ctx.beginPath();
+    ctx.arc(center.x, center.y, hoveredGizmoAxis === "center" ? 7 : 5, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = "#aaaaaa";
+    ctx.lineWidth = 1;
+    ctx.stroke();
+
+  } else if (transformMode === "rotate") {
+    // Draw rotation rings
+    const ringAxes = [
+      { key: "x", color: "#ff4444", hoverColor: "#ff8888", angle1: 0, angle2: 1 },
+      { key: "y", color: "#44dd44", hoverColor: "#88ff88", angle1: 1, angle2: 0 },
+      { key: "z", color: "#4488ff", hoverColor: "#88aaff", angle1: 0.5, angle2: 0.5 },
+    ];
+
+    const R = 50 * center.scale * 0.6;
+    ringAxes.forEach((ax, i) => {
+      const isHovered = hoveredGizmoAxis === ax.key;
+      ctx.strokeStyle = isHovered ? ax.hoverColor : ax.color;
+      ctx.lineWidth = isHovered ? 3 : 1.5;
+      ctx.beginPath();
+      if (i === 0) ctx.ellipse(center.x, center.y, R * 0.3, R, 0, 0, Math.PI * 2);
+      else if (i === 1) ctx.ellipse(center.x, center.y, R, R * 0.3, 0, 0, Math.PI * 2);
+      else ctx.ellipse(center.x, center.y, R, R, 0, 0, Math.PI * 2);
+      ctx.stroke();
+    });
+  }
+
+  ctx.restore();
+}
+
+// ── Hit test gizmo axes ────────────────────────────────────────────────────
+function hitTestGizmo(mx, my, obj, camAngle, camPitch, camDist, W, H, transformMode) {
+  if (!obj) return null;
+  const cx = obj.x, cy = obj.y || 0, cz = obj.z;
+  const center = project3D(cx, cy, cz, camAngle, camPitch, camDist, W, H);
+  if (center.z < 0) return null;
+
+  const AXIS_LEN = 70;
+  const axes = [
+    { key: "x", dx: AXIS_LEN, dy: 0, dz: 0 },
+    { key: "y", dx: 0, dy: -AXIS_LEN, dz: 0 },
+    { key: "z", dx: 0, dy: 0, dz: AXIS_LEN },
+  ];
+
+  // Center hit
+  if (Math.hypot(mx - center.x, my - center.y) < 10) return "center";
+
+  if (transformMode === "rotate") {
+    const R = 50 * center.scale * 0.6;
+    // Check ring hit (approximate)
+    const dist = Math.hypot(mx - center.x, my - center.y);
+    if (Math.abs(dist - R) < 8) {
+      const angle = Math.atan2(my - center.y, mx - center.x);
+      if (angle > -0.5 && angle < 0.5) return "x";
+      if (angle > 1.0 && angle < 2.1) return "y";
+      return "z";
+    }
+    return null;
+  }
+
+  for (const ax of axes) {
+    const tip = project3D(cx + ax.dx * 0.4, cy + ax.dy * 0.4, cz + ax.dz * 0.4, camAngle, camPitch, camDist, W, H);
+    if (tip.z < 0) continue;
+    // Line segment hit
+    const L = Math.hypot(tip.x - center.x, tip.y - center.y);
+    if (L < 0.1) continue;
+    const t = Math.max(0, Math.min(1, ((mx - center.x) * (tip.x - center.x) + (my - center.y) * (tip.y - center.y)) / (L * L)));
+    const nearX = center.x + t * (tip.x - center.x);
+    const nearY = center.y + t * (tip.y - center.y);
+    if (Math.hypot(mx - nearX, my - nearY) < 8) return ax.key;
+  }
+  return null;
+}
+
 // ── 3D Renderer ────────────────────────────────────────────────────────────
 function draw3DScene(ctx, W, H, objects3d, lights, camAngle, camPitch, camDist, selIds, visualStyle, envSettings, showGrid, showAxes, editMode) {
-  // BG
   if (envSettings.skybox === "sunset") {
     const grad = ctx.createLinearGradient(0, 0, 0, H);
     grad.addColorStop(0, "#1a0533"); grad.addColorStop(0.5, "#c0392b"); grad.addColorStop(1, "#e67e22");
@@ -140,7 +282,6 @@ function draw3DScene(ctx, W, H, objects3d, lights, camAngle, camPitch, camDist, 
   }
   ctx.fillRect(0, 0, W, H);
 
-  // Stars for night
   if (envSettings.skybox === "night") {
     ctx.fillStyle = "rgba(255,255,255,0.8)";
     for (let i = 0; i < 80; i++) {
@@ -149,7 +290,6 @@ function draw3DScene(ctx, W, H, objects3d, lights, camAngle, camPitch, camDist, 
     }
   }
 
-  // Fog overlay
   if (envSettings.fog) {
     const fogGrad = ctx.createLinearGradient(0, H * 0.4, 0, H);
     fogGrad.addColorStop(0, "transparent");
@@ -158,21 +298,8 @@ function draw3DScene(ctx, W, H, objects3d, lights, camAngle, camPitch, camDist, 
     ctx.fillRect(0, 0, W, H);
   }
 
-  const project = (x, y, z) => {
-    const ca = Math.cos(camAngle), sa = Math.sin(camAngle);
-    const cp = Math.cos(camPitch), sp = Math.sin(camPitch);
-    const rx = x * ca - z * sa;
-    const ry = x * sa + z * ca;
-    const rz = y * cp - ry * sp;
-    const ry2 = y * sp + ry * cp;
-    const fov = camDist;
-    const pz = ry2 + fov;
-    if (pz <= 0) return { x: W / 2, y: H / 2, z: -1, scale: 0 };
-    const scale = fov / pz;
-    return { x: W / 2 + rx * scale, y: H / 2 - rz * scale, z: pz, scale };
-  };
+  const project = (x, y, z) => project3D(x, y, z, camAngle, camPitch, camDist, W, H);
 
-  // Grid floor
   if (showGrid) {
     ctx.save();
     const gLines = 12, gSpacing = 40;
@@ -189,7 +316,6 @@ function draw3DScene(ctx, W, H, objects3d, lights, camAngle, camPitch, camDist, 
     ctx.restore();
   }
 
-  // Water plane
   if (envSettings.water) {
     ctx.save();
     ctx.globalAlpha = 0.4;
@@ -210,7 +336,6 @@ function draw3DScene(ctx, W, H, objects3d, lights, camAngle, camPitch, camDist, 
     ctx.restore();
   }
 
-  // Sort back to front
   const sorted = [...objects3d].sort((a, b) => {
     const da = Math.sqrt(a.x * a.x + a.z * a.z + (a.y || 0) * (a.y || 0));
     const db = Math.sqrt(b.x * b.x + b.z * b.z + (b.y || 0) * (b.y || 0));
@@ -276,11 +401,9 @@ function draw3DScene(ctx, W, H, objects3d, lights, camAngle, camPitch, camDist, 
     const rx = (obj.rotX || 0), ry2 = (obj.rotY || 0), rz2 = (obj.rotZ || 0);
 
     const applyRot = (x, y, z) => {
-      // Rotation Y
       let nx = x * Math.cos(ry2) + z * Math.sin(ry2);
       let nz = -x * Math.sin(ry2) + z * Math.cos(ry2);
       x = nx; z = nz;
-      // Rotation X
       let ny = y * Math.cos(rx) - z * Math.sin(rx);
       nz = y * Math.sin(rx) + z * Math.cos(rx);
       y = ny; z = nz;
@@ -449,7 +572,6 @@ function draw3DScene(ctx, W, H, objects3d, lights, camAngle, camPitch, camDist, 
       ctx.beginPath(); ctx.arc(top.x, top.y, sr, Math.PI, 0); ctx.lineTo(bot.x + sr, bot.y); ctx.arc(bot.x, bot.y, sr, 0, Math.PI); ctx.closePath(); ctx.stroke();
     }
 
-    // Light icons
     if (obj.shape === "light") {
       const c = project(obj.x, obj.y || 0, obj.z);
       if (c.z > 0) {
@@ -473,17 +595,14 @@ function draw3DScene(ctx, W, H, objects3d, lights, camAngle, camPitch, camDist, 
       }
     }
 
-    // Selection glow
     if (sel) { ctx.shadowColor = "#ffcc00"; ctx.shadowBlur = 15; }
     ctx.restore();
   });
 
-  // Axis indicator
   if (showAxes) {
     ctx.save();
     const ax = 50, ay = H - 50;
     [[30, 0, 0, "#ff4444", "X"], [0, -30, 0, "#44cc44", "Y"], [0, 0, 30, "#4488ff", "Z"]].forEach(([dx, dy, dz, c, lbl]) => {
-      const tip = project(dx * 0.5, dy * 0.5, dz * 0.5);
       ctx.strokeStyle = c; ctx.lineWidth = 2;
       ctx.beginPath(); ctx.moveTo(ax, ay);
       ctx.lineTo(ax + dx * 0.5, ay + dy * 0.5); ctx.stroke();
@@ -493,7 +612,6 @@ function draw3DScene(ctx, W, H, objects3d, lights, camAngle, camPitch, camDist, 
     ctx.restore();
   }
 
-  // Measurement overlays
   objects3d.forEach(obj => {
     if (obj.showMeasure) {
       const c = project(obj.x, obj.y || 0, obj.z);
@@ -609,7 +727,7 @@ const TOOL_ICONS = {
   walk: "M12 3a1 1 0 1 0 0 2M9 21l3-8 3 8M6 8l6-2 6 2",
   flymode: "M12 2L2 19h20L12 2z", reset_cam: "M3 12a9 9 0 1 0 18 0M3 12l3-3M3 12l3 3",
   viewtop: "M12 2v4M3 7l9-5 9 5M3 7v10l9 5 9-5V7",
-  viewfront: "M3 3h18v18H3z", viewright: "M3 3h18v18H3zM12 3v18", viewiso: "M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5",
+  viewfront: "M3 3h18v18H3z", viewright: "M3 3h18v18H3zM12 3v18", viewiso: "M12 2L2 7v10l10 5 10-5V7L12 2zM2 7l10 5M22 7l-10 5M12 22V12",
   wireframe: "M12 2L2 7v10l10 5 10-5V7L12 2z", hidden: "M3 3l18 18M3 3h18v18H3z",
   conceptual: "M12 2L2 7v10l10 5 10-5V7L12 2zM2 7l10 5M22 7l-10 5M12 22V12",
   realistic: "M12 2a10 10 0 1 0 0 20", shaded: "M12 2a10 10 0 1 0 0 20M4 7c2 1 5 2 8 2s6-1 8-2",
@@ -621,13 +739,12 @@ const TOOL_ICONS = {
   exportstl: "M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5",
   pagesetup: "M3 3h18v18H3zM3 9h18M9 21V9",
   select: "M5 3l14 9-7 2-3 7z",
-  char_template: "M12 2a4 4 0 1 0 0 8 4 4 0 0 0 0-8zM4 20a8 8 0 0 1 16 0",
-  rig_bones: "M6 6l6 6M18 6l-6 6M12 12v6M9 18h6",
-  pose_tool: "M12 2a2 2 0 1 0 0 4M12 6l-3 6M12 6l3 6M9 12l-2 8M15 12l2 8M9 20h6",
-  duplicate: "M8 8H4v14h14v-4M20 4H10v10h10V4z",
-  mirror3d: "M12 3v18M5 7l4 5-4 5M19 7l-4 5 4 5",
-  align3d: "M3 6h18M3 12h18M3 18h18M12 3v18",
-  pivot: "M12 12m-3 0a3 3 0 1 0 6 0a3 3 0 1 0-6 0M12 2v4M12 18v4M2 12h4M18 12h4",
+  cursor3d: "M5 3l14 9-7 2-3 7z",
+  gizmo_move: "M5 9l-3 3 3 3M19 9l3 3-3 3M2 12h20M12 5l3-3M12 19l-3 3",
+  gizmo_rotate: "M21 2v6h-6M3 12a9 9 0 0 1 15-6.7L21 8",
+  gizmo_scale: "M21 21H3M21 21V3M9 15l12 6",
+  gizmo_annotate: "M4 7V4h16v3M9 20h6M12 4v16",
+  gizmo_measure: "M3 6h18M3 6v3M21 6v3M12 6v5",
 };
 
 const TOOL_LABEL = {
@@ -656,13 +773,18 @@ const TOOL_LABEL = {
   wireframe: "Wireframe", hidden: "Hidden", conceptual: "Concept", realistic: "Realistic", shaded: "Shaded", xray: "X-Ray",
   toggle_grid: "Grid", toggle_axes: "Axes", toggle_measure: "Measure",
   plot: "Plot", exportpdf: "PDF", exportstl: "STL", pagesetup: "Setup",
-  select: "Select",
+  select: "Select", cursor3d: "Cursor", gizmo_move: "Move", gizmo_rotate: "Rotate", gizmo_scale: "Scale",
+  gizmo_annotate: "Annotate", gizmo_measure: "Measure",
 };
+
+// Workspace tabs (Blender-style)
+const WORKSPACES = ["Layout", "Modeling", "Sculpting", "UV Editing", "Shading", "Animation", "Rendering", "Compositing"];
 
 // ════════════════════════════════════════════════════════════════════════════
 export default function CADEditor() {
   // ── Viewport
   const [vp, setVp] = useState("3d");
+  const [activeWorkspace, setActiveWorkspace] = useState("Layout");
 
   // ── Refs
   const canvasRef = useRef(null);
@@ -699,7 +821,17 @@ export default function CADEditor() {
   const [showGrid3d, setShowGrid3d] = useState(true);
   const [showAxes3d, setShowAxes3d] = useState(true);
   const [showMeasure3d, setShowMeasure3d] = useState(false);
-  const [editMode, setEditMode] = useState("obj_mode"); // obj_mode|vert_mode|edge_mode|face_mode|sculpt_mode
+  const [editMode, setEditMode] = useState("obj_mode");
+
+  // ── Gizmo / Transform state (NEW)
+  const [gizmoAxis, setGizmoAxis] = useState(null);         // currently dragging axis
+  const [hoveredGizmoAxis, setHoveredGizmoAxis] = useState(null);
+  const [gizmoDragStart, setGizmoDragStart] = useState(null);
+  const [gizmoDragObj, setGizmoDragObj] = useState(null);    // snapshot of obj at drag start
+  const [isGizmoDragging, setIsGizmoDragging] = useState(false);
+
+  // ── Left toolbar tool (viewport-level, Blender-style)
+  const [viewportTool, setViewportTool] = useState("select"); // select|cursor3d|gizmo_move|gizmo_rotate|gizmo_scale|gizmo_annotate|gizmo_measure
 
   // ── Lights
   const [lights, setLights] = useState([
@@ -709,7 +841,7 @@ export default function CADEditor() {
 
   // ── Scene hierarchy
   const [sceneNodes, setSceneNodes] = useState([
-    mkNode(1, "Scene", "root"),
+    mkNode(1, "Scene Collection", "root"),
   ]);
   const [expandedNodes, setExpandedNodes] = useState(new Set([1]));
   const [selNodeId, setSelNodeId] = useState(null);
@@ -745,7 +877,7 @@ export default function CADEditor() {
   const [selectedMaterial, setSelectedMaterial] = useState("Default");
 
   // ── Properties transform
-  const [transformMode, setTransformMode] = useState("move"); // move|rotate|scale
+  const [transformMode, setTransformMode] = useState("move");
 
   // ── Lasso / box select
   const [boxSelStart, setBoxSelStart] = useState(null);
@@ -759,15 +891,23 @@ export default function CADEditor() {
   // ── Physics
   const [physics, setPhysics] = useState({ gravity: -9.8, enabled: false, bounce: 0.3, friction: 0.5 });
 
-  // ── Timeline
-  const [timelineFrame, setTimelineFrame] = useState(0);
+  // ── Timeline (NEW enhanced)
+  const [timelineFrame, setTimelineFrame] = useState(1);
   const [timelinePlaying, setTimelinePlaying] = useState(false);
+  const [timelineStart, setTimelineStart] = useState(1);
+  const [timelineEnd, setTimelineEnd] = useState(250);
   const timelineRef = useRef(null);
 
   // ── Command
-  const [cmdLog, setCmdLog] = useState(["Welcome to 3DCAD Studio Pro", "Command:"]);
+  const [cmdLog, setCmdLog] = useState(["Welcome to 3DCAD Studio Pro v2.0", "Blender-style UI | Type 'help' for commands", "Command:"]);
   const [cmdInput, setCmdInput] = useState("");
   const [searchQ, setSearchQ] = useState("");
+
+  // ── Top menu dropdown state
+  const [openMenu, setOpenMenu] = useState(null);
+
+  // ── Perspective toggle
+  const [isPerspective, setIsPerspective] = useState(true);
 
   // ── ResizeObserver ─────────────────────────────────────────────────────
   useEffect(() => {
@@ -785,9 +925,13 @@ export default function CADEditor() {
   // ── Timeline playback ──────────────────────────────────────────────────
   useEffect(() => {
     if (!timelinePlaying) return;
-    const id = setInterval(() => setTimelineFrame(f => (f + 1) % 240), 33);
+    const id = setInterval(() => setTimelineFrame(f => {
+      const next = f + 1;
+      if (next > timelineEnd) { setTimelinePlaying(false); return timelineStart; }
+      return next;
+    }), 33);
     return () => clearInterval(id);
-  }, [timelinePlaying]);
+  }, [timelinePlaying, timelineEnd, timelineStart]);
 
   // ── Helpers ────────────────────────────────────────────────────────────
   const toW = useCallback((sx, sy) => ({ x: (sx - pan2d.x) / zoom, y: (sy - pan2d.y) / zoom }), [pan2d, zoom]);
@@ -890,7 +1034,6 @@ export default function CADEditor() {
 
     entities.forEach(e => drawEnt(e, selIds2d.includes(e.id)));
 
-    // Preview
     if (drawing && startPt && tempPt) {
       ctx.save(); ctx.strokeStyle = color; ctx.lineWidth = Math.max(0.5, lw); ctx.setLineDash([6, 4]);
       const a = toS(startPt.x, startPt.y), b = toS(tempPt.x, tempPt.y);
@@ -909,7 +1052,6 @@ export default function CADEditor() {
       ctx.restore();
     }
 
-    // Box select
     if (isBoxSelecting && boxSelStart && boxSelEnd) {
       ctx.save(); ctx.strokeStyle = "#00bfff"; ctx.lineWidth = 1; ctx.setLineDash([4, 3]);
       ctx.fillStyle = "rgba(0,120,255,0.07)";
@@ -918,13 +1060,11 @@ export default function CADEditor() {
       ctx.fillRect(x, y, w2, h2); ctx.strokeRect(x, y, w2, h2); ctx.setLineDash([]); ctx.restore();
     }
 
-    // Snap square
     if (snap && tempPt) {
       const s = toS(tempPt.x, tempPt.y);
       ctx.save(); ctx.strokeStyle = "#ffff00"; ctx.lineWidth = 1.5; ctx.strokeRect(s.x - 5, s.y - 5, 10, 10); ctx.restore();
     }
 
-    // Crosshair
     ctx.save(); ctx.strokeStyle = "rgba(255,255,255,0.55)"; ctx.lineWidth = 1;
     ctx.beginPath(); ctx.moveTo(0, cursor.y); ctx.lineTo(cursor.x - 8, cursor.y); ctx.stroke();
     ctx.beginPath(); ctx.moveTo(cursor.x + 8, cursor.y); ctx.lineTo(W, cursor.y); ctx.stroke();
@@ -932,7 +1072,6 @@ export default function CADEditor() {
     ctx.beginPath(); ctx.moveTo(cursor.x, cursor.y + 8); ctx.lineTo(cursor.x, H); ctx.stroke();
     ctx.restore();
 
-    // UCS
     const ux = 28, uy = H - 28;
     ctx.save();
     ctx.lineWidth = 2; ctx.strokeStyle = "#ff3333"; ctx.fillStyle = "#ff3333";
@@ -950,11 +1089,22 @@ export default function CADEditor() {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext("2d");
-    // Include lights as special objects for rendering
     const allObjs = [...objs3d];
     draw3DScene(ctx, canvas.width, canvas.height, allObjs, lights, camAngle, camPitch, camDist, selIds3d, visualStyle, envSettings, showGrid3d, showAxes3d, editMode);
 
-    // Edit mode overlay
+    // Draw gizmo for selected object
+    const activeTransformMode = viewportTool === "gizmo_move" ? "move"
+      : viewportTool === "gizmo_rotate" ? "rotate"
+      : viewportTool === "gizmo_scale" ? "scale"
+      : transformMode;
+
+    if (selIds3d.length > 0 && (viewportTool === "gizmo_move" || viewportTool === "gizmo_rotate" || viewportTool === "gizmo_scale" || viewportTool === "select")) {
+      const firstSel = objs3d.find(o => o.id === selIds3d[0]);
+      if (firstSel && activeTransformMode !== "none") {
+        drawTransformGizmo(ctx, firstSel, camAngle, camPitch, camDist, canvas.width, canvas.height, activeTransformMode, hoveredGizmoAxis);
+      }
+    }
+
     if (editMode !== "obj_mode") {
       ctx.save();
       ctx.fillStyle = "rgba(0,120,255,0.12)";
@@ -963,7 +1113,7 @@ export default function CADEditor() {
       ctx.fillText(`  ◉ ${editMode.replace("_", " ").toUpperCase()} — Press TAB to cycle`, 8, 16);
       ctx.restore();
     }
-  }, [vp, objs3d, lights, selIds3d, camAngle, camPitch, camDist, visualStyle, envSettings, showGrid3d, showAxes3d, editMode, csz]);
+  }, [vp, objs3d, lights, selIds3d, camAngle, camPitch, camDist, visualStyle, envSettings, showGrid3d, showAxes3d, editMode, csz, hoveredGizmoAxis, viewportTool, transformMode]);
 
   // ── Mouse ─────────────────────────────────────────────────────────────
   const onMouseMove = (e) => {
@@ -972,6 +1122,65 @@ export default function CADEditor() {
     setCursor({ x: sx, y: sy });
 
     if (vp === "3d") {
+      // Gizmo drag
+      if (isGizmoDragging && gizmoAxis && gizmoDragStart && gizmoDragObj) {
+        const dx = sx - gizmoDragStart.x;
+        const dy = sy - gizmoDragStart.y;
+        const sensitivity = 0.5;
+        const activeTransformMode = viewportTool === "gizmo_move" ? "move"
+          : viewportTool === "gizmo_rotate" ? "rotate"
+          : viewportTool === "gizmo_scale" ? "scale"
+          : transformMode;
+
+        selIds3d.forEach(sid => {
+          const srcObj = objs3d.find(o => o.id === sid);
+          const baseObj = sid === gizmoDragObj.id ? gizmoDragObj : srcObj;
+          if (!srcObj) return;
+
+          if (activeTransformMode === "move") {
+            const delta = (dx - dy) * sensitivity;
+            if (gizmoAxis === "x") setObjs3d(p => p.map(o => o.id === sid ? { ...o, x: baseObj.x + dx * sensitivity } : o));
+            else if (gizmoAxis === "y") setObjs3d(p => p.map(o => o.id === sid ? { ...o, y: (baseObj.y || 0) - dy * sensitivity } : o));
+            else if (gizmoAxis === "z") setObjs3d(p => p.map(o => o.id === sid ? { ...o, z: baseObj.z + dx * sensitivity } : o));
+            else if (gizmoAxis === "center") setObjs3d(p => p.map(o => o.id === sid ? { ...o, x: baseObj.x + dx * sensitivity, z: baseObj.z + dy * sensitivity } : o));
+          } else if (activeTransformMode === "scale") {
+            const factor = 1 + (dx + dy) * 0.005;
+            if (gizmoAxis === "x" && baseObj.w !== undefined) setObjs3d(p => p.map(o => o.id === sid ? { ...o, w: Math.max(1, baseObj.w * (1 + dx * 0.01)) } : o));
+            else if (gizmoAxis === "y" && baseObj.h !== undefined) setObjs3d(p => p.map(o => o.id === sid ? { ...o, h: Math.max(1, baseObj.h * (1 - dy * 0.01)) } : o));
+            else if (gizmoAxis === "z" && baseObj.d !== undefined) setObjs3d(p => p.map(o => o.id === sid ? { ...o, d: Math.max(1, baseObj.d * (1 + dx * 0.01)) } : o));
+            else if (gizmoAxis === "center") {
+              const sf = 1 + (dx + dy) * 0.005;
+              setObjs3d(p => p.map(o => o.id === sid ? {
+                ...o,
+                w: baseObj.w !== undefined ? Math.max(1, baseObj.w * sf) : o.w,
+                h: baseObj.h !== undefined ? Math.max(1, baseObj.h * sf) : o.h,
+                d: baseObj.d !== undefined ? Math.max(1, baseObj.d * sf) : o.d,
+                r: baseObj.r !== undefined ? Math.max(1, baseObj.r * sf) : o.r,
+              } : o));
+            }
+          } else if (activeTransformMode === "rotate") {
+            const delta = (dx + dy) * 0.01;
+            if (gizmoAxis === "x" || gizmoAxis === "y") setObjs3d(p => p.map(o => o.id === sid ? { ...o, rotX: (baseObj.rotX || 0) + delta } : o));
+            else if (gizmoAxis === "z") setObjs3d(p => p.map(o => o.id === sid ? { ...o, rotY: (baseObj.rotY || 0) + delta } : o));
+            else if (gizmoAxis === "center") setObjs3d(p => p.map(o => o.id === sid ? { ...o, rotY: (baseObj.rotY || 0) + dx * 0.01 } : o));
+          }
+        });
+        return;
+      }
+
+      // Hover gizmo detection
+      if (selIds3d.length > 0) {
+        const firstSel = objs3d.find(o => o.id === selIds3d[0]);
+        const activeTransformMode = viewportTool === "gizmo_move" ? "move"
+          : viewportTool === "gizmo_rotate" ? "rotate"
+          : viewportTool === "gizmo_scale" ? "scale"
+          : transformMode;
+        if (firstSel) {
+          const hovered = hitTestGizmo(sx, sy, firstSel, camAngle, camPitch, camDist, csz.w, csz.h, activeTransformMode);
+          setHoveredGizmoAxis(hovered);
+        }
+      }
+
       if (orbiting && orbitStart) {
         const dx = (sx - orbitStart.x) * 0.008, dy = (sy - orbitStart.y) * 0.008;
         setCamAngle(a => a + dx);
@@ -979,7 +1188,6 @@ export default function CADEditor() {
         setOrbitStart({ x: sx, y: sy });
       }
       if (isDrag && dragSt && tool === "pan") {
-        // Pan in 3D (shift the cam angle slightly)
         const dx = (sx - dragSt.x) * 0.004;
         setCamAngle(a => a + dx);
         setDragSt({ x: sx, y: sy });
@@ -1004,32 +1212,42 @@ export default function CADEditor() {
     const sx = e.clientX - rect.left, sy = e.clientY - rect.top;
 
     if (vp === "3d") {
-      if (e.button === 0 && tool === "select") {
-        // Pick 3D object (screen-space bounding box approximation)
-        const W = csz.w, H = csz.h;
-        const project = (x, y, z) => {
-          const ca = Math.cos(camAngle), sa = Math.sin(camAngle);
-          const cp = Math.cos(camPitch), sp = Math.sin(camPitch);
-          const rx = x * ca - z * sa, ry = x * sa + z * ca;
-          const rz = y * cp - ry * sp, ry2 = y * sp + ry * cp;
-          const pz = ry2 + camDist;
-          if (pz <= 0) return null;
-          const scale = camDist / pz;
-          return { x: W / 2 + rx * scale, y: H / 2 - rz * scale, z: pz, scale };
-        };
-        const hit = [...objs3d].reverse().find(obj => {
-          const c = project(obj.x, obj.y || 0, obj.z);
-          if (!c) return false;
-          const approxR = (obj.r || Math.max(obj.w || 40, obj.h || 40, obj.d || 40) / 2) * c.scale;
-          return Math.hypot(sx - c.x, sy - c.y) < approxR + 12;
-        });
-        if (hit) {
-          setSelIds3d(e.shiftKey ? (selIds3d.includes(hit.id) ? selIds3d.filter(i => i !== hit.id) : [...selIds3d, hit.id]) : [hit.id]);
-          setSelNodeId(hit.id);
-        } else if (!e.shiftKey) {
-          setSelIds3d([]);
+      if (e.button === 0) {
+        // Check gizmo hit first
+        if (selIds3d.length > 0) {
+          const firstSel = objs3d.find(o => o.id === selIds3d[0]);
+          const activeTransformMode = viewportTool === "gizmo_move" ? "move"
+            : viewportTool === "gizmo_rotate" ? "rotate"
+            : viewportTool === "gizmo_scale" ? "scale"
+            : transformMode;
+          if (firstSel) {
+            const hitAxis = hitTestGizmo(sx, sy, firstSel, camAngle, camPitch, camDist, csz.w, csz.h, activeTransformMode);
+            if (hitAxis) {
+              setGizmoAxis(hitAxis);
+              setGizmoDragStart({ x: sx, y: sy });
+              setGizmoDragObj({ ...firstSel });
+              setIsGizmoDragging(true);
+              return;
+            }
+          }
         }
-        return;
+
+        if (tool === "select" || viewportTool === "select") {
+          const W = csz.w, H = csz.h;
+          const hit = [...objs3d].reverse().find(obj => {
+            const c = project3D(obj.x, obj.y || 0, obj.z, camAngle, camPitch, camDist, W, H);
+            if (!c) return false;
+            const approxR = (obj.r || Math.max(obj.w || 40, obj.h || 40, obj.d || 40) / 2) * c.scale;
+            return Math.hypot(sx - c.x, sy - c.y) < approxR + 12;
+          });
+          if (hit) {
+            setSelIds3d(e.shiftKey ? (selIds3d.includes(hit.id) ? selIds3d.filter(i => i !== hit.id) : [...selIds3d, hit.id]) : [hit.id]);
+            setSelNodeId(hit.id);
+          } else if (!e.shiftKey) {
+            setSelIds3d([]);
+          }
+          return;
+        }
       }
       if (e.button === 1 || (e.button === 0 && tool === "pan")) { setIsDrag(true); setDragSt({ x: sx, y: sy }); return; }
       if (e.button === 2 || e.button === 0) { setOrbiting(true); setOrbitStart({ x: sx, y: sy }); }
@@ -1070,7 +1288,16 @@ export default function CADEditor() {
   };
 
   const onMouseUp = (e) => {
-    if (vp === "3d") { setOrbiting(false); setIsDrag(false); return; }
+    if (vp === "3d") {
+      setOrbiting(false); setIsDrag(false);
+      if (isGizmoDragging) {
+        setIsGizmoDragging(false);
+        setGizmoAxis(null);
+        setGizmoDragStart(null);
+        setGizmoDragObj(null);
+      }
+      return;
+    }
     if (e.button === 1 || tool === "pan") setIsDrag(false);
     if (isBoxSelecting) {
       setIsBoxSelecting(false);
@@ -1135,6 +1362,7 @@ export default function CADEditor() {
       y: 0,
       z: (Math.random() - 0.5) * 120,
       rotX: 0, rotY: 0, rotZ: 0,
+      scaleX: 1, scaleY: 1, scaleZ: 1,
       material: mat,
       ...defs,
       ...overrides,
@@ -1146,7 +1374,6 @@ export default function CADEditor() {
     return newObj.id;
   }, [selectedMaterial]);
 
-  // ── Add from asset library ─────────────────────────────────────────────
   const addFromLibrary = useCallback((asset) => {
     const mat = { ...MATERIALS.Default, color: asset.color };
     const newObj = {
@@ -1155,6 +1382,7 @@ export default function CADEditor() {
       y: 0,
       z: (Math.random() - 0.5) * 160,
       rotX: 0, rotY: 0, rotZ: 0,
+      scaleX: 1, scaleY: 1, scaleZ: 1,
       material: mat,
       ...Object.fromEntries(Object.entries(asset).filter(([k]) => ["w", "h", "d", "r", "tube", "base"].includes(k))),
     };
@@ -1164,7 +1392,6 @@ export default function CADEditor() {
     setVp("3d");
   }, []);
 
-  // ── Add light ──────────────────────────────────────────────────────────
   const addLight = (type) => {
     const id = nextId();
     const newLight = {
@@ -1179,9 +1406,7 @@ export default function CADEditor() {
     logCmd(`Added ${type} light`);
   };
 
-  // ── Generate architecture ──────────────────────────────────────────────
   const genArchitecture = (type) => {
-    const spread = 150;
     if (type === "wall") {
       add3D("box3d", { w: 200, h: 250, d: 20, material: { ...MATERIALS.Concrete } });
     } else if (type === "door_gen") {
@@ -1205,7 +1430,6 @@ export default function CADEditor() {
     } else if (type === "roof_gen") {
       add3D("pyramid3d", { base: 350, h: 120, y: -160, material: { color: "#8B3A3A", roughness: 0.9, metalness: 0, opacity: 1, emissive: "#000" } });
     } else if (type === "room_gen") {
-      // 4 walls + floor
       const wallMat = { ...MATERIALS.Concrete };
       const walls = [
         { x: 0, y: -120, z: -150, w: 320, h: 250, d: 20 },
@@ -1223,11 +1447,9 @@ export default function CADEditor() {
     setVp("3d");
   };
 
-  // ── Update 3D object ───────────────────────────────────────────────────
   const upd3D = (id, changes) => setObjs3d(p => p.map(o => o.id === id ? { ...o, ...changes } : o));
   const updMat = (id, matChanges) => setObjs3d(p => p.map(o => o.id === id ? { ...o, material: { ...(o.material || MATERIALS.Default), ...matChanges } } : o));
 
-  // ── Delete selected ────────────────────────────────────────────────────
   const del3D = () => {
     if (selIds3d.length === 0) return;
     setObjs3d(p => p.filter(o => !selIds3d.includes(o.id)));
@@ -1235,7 +1457,6 @@ export default function CADEditor() {
     setSelIds3d([]);
   };
 
-  // ── Duplicate selected ─────────────────────────────────────────────────
   const duplicate3D = () => {
     const newObjs = selIds3d.map(sid => {
       const src = objs3d.find(o => o.id === sid);
@@ -1247,7 +1468,6 @@ export default function CADEditor() {
     logCmd(`Duplicated ${newObjs.length} object(s)`);
   };
 
-  // ── Mirror selected ────────────────────────────────────────────────────
   const mirror3D = (axis) => {
     setObjs3d(p => p.map(o => {
       if (!selIds3d.includes(o.id)) return o;
@@ -1263,7 +1483,7 @@ export default function CADEditor() {
       if (e.ctrlKey && e.key === "z") { e.preventDefault(); undo(); }
       if (e.ctrlKey && e.key === "y") { e.preventDefault(); redo(); }
       if (e.ctrlKey && e.key === "d") { e.preventDefault(); duplicate3D(); }
-      if (e.key === "Escape") { resetDraw(); setSelIds2d([]); setSelIds3d([]); log("*Cancel*"); }
+      if (e.key === "Escape") { resetDraw(); setSelIds2d([]); setSelIds3d([]); log("*Cancel*"); setOpenMenu(null); }
       if (e.key === "Delete") {
         if (vp === "3d") del3D();
         else if (selIds2d.length) {
@@ -1279,14 +1499,13 @@ export default function CADEditor() {
         const modes = ["obj_mode", "vert_mode", "edge_mode", "face_mode", "sculpt_mode"];
         setEditMode(m => modes[(modes.indexOf(m) + 1) % modes.length]);
       }
-      // G/R/S = Move/Rotate/Scale in 3D
-      if (e.key === "g" && vp === "3d") setTransformMode("move");
-      if (e.key === "r" && vp === "3d") setTransformMode("rotate");
-      if (e.key === "s" && vp === "3d") setTransformMode("scale");
-      // Number pad views
+      if (e.key === "g" && vp === "3d") { setTransformMode("move"); setViewportTool("gizmo_move"); }
+      if (e.key === "r" && vp === "3d") { setTransformMode("rotate"); setViewportTool("gizmo_rotate"); }
+      if (e.key === "s" && vp === "3d") { setTransformMode("scale"); setViewportTool("gizmo_scale"); }
       if (e.key === "1") { setCamAngle(0); setCamPitch(0); }
       if (e.key === "3") { setCamAngle(Math.PI / 2); setCamPitch(0); }
       if (e.key === "7") { setCamAngle(0); setCamPitch(Math.PI / 2); }
+      if (e.key === " ") { e.preventDefault(); setTimelinePlaying(p => !p); }
     };
     window.addEventListener("keydown", kd);
     return () => window.removeEventListener("keydown", kd);
@@ -1331,8 +1550,8 @@ export default function CADEditor() {
     if (cmd === "shaded") { setVisualStyle("shaded"); return; }
     if (cmd === "realistic") { setVisualStyle("realistic"); return; }
     if (cmd === "help" || cmd === "?") {
-      log("Commands: box sphere cyl cone torus plane capsule wall roof floor room clear 2d 3d undo redo del dup wireframe shaded realistic grid zoom");
-      log("Hotkeys: Del=delete Tab=editmode G=move R=rotate S=scale 1/3/7=views Ctrl+D=duplicate Ctrl+Z=undo");
+      log("Commands: box sphere cyl cone torus plane capsule wall roof floor room clear 2d 3d undo redo del dup wireframe shaded realistic grid");
+      log("Hotkeys: Del=delete Tab=editmode G=move R=rotate S=scale 1/3/7=views Ctrl+D=duplicate Ctrl+Z=undo Space=play");
       return;
     }
     log(`Unknown: "${cmd}". Type 'help' for commands.`);
@@ -1343,19 +1562,15 @@ export default function CADEditor() {
   const selEnt2d = entities.filter(e => selIds2d.includes(e.id));
   const firstSel3d = selObjs3d[0];
 
-  // ════════════════════════════════════════════════════════════════════════
-  // COLORS / STYLES
-  // ════════════════════════════════════════════════════════════════════════
+  const activeTransformMode = viewportTool === "gizmo_move" ? "move"
+    : viewportTool === "gizmo_rotate" ? "rotate"
+    : viewportTool === "gizmo_scale" ? "scale"
+    : transformMode;
+
+  // ── Style constants ────────────────────────────────────────────────────
   const acBg = "#2d2d30", acRibBg = "#3c3c3c", acDark = "#1e1e1e";
   const acBorder = "#1a1a1a", acText = "#cccccc", acLt = "#ffffff";
   const acDim = "#777", acBlue = "#0078d4", acGreen = "#4ec94e";
-
-  const sApp = {
-    display: "flex", flexDirection: "column", width: "100vw", height: "100vh",
-    background: "#2d2d30", color: acText,
-    fontFamily: "'Segoe UI', 'SF Pro Text', Tahoma, sans-serif",
-    fontSize: 11, overflow: "hidden", userSelect: "none",
-  };
 
   const sRBtn = (active) => ({
     display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
@@ -1376,94 +1591,212 @@ export default function CADEditor() {
     fontSize: 10, padding: "1px 3px", borderRadius: 2,
   };
 
-  // ── Scene tree renderer ────────────────────────────────────────────────
-  const renderTree = (nodes, depth = 0) => nodes.map(node => (
+  const sNumInput = {
+    width: 58, background: "#111", color: "#fff", border: "1px solid #333",
+    fontSize: 10, padding: "2px 4px", borderRadius: 2, outline: "none",
+    textAlign: "right",
+  };
+
+  // ── Outliner tree renderer (NEW enhanced) ──────────────────────────────
+  const renderOutlinerTree = (nodes, depth = 0) => nodes.map(node => (
     <div key={node.id}>
       <div onClick={() => { setSelNodeId(node.id); if (node.type !== "root") setSelIds3d([node.id]); }}
         style={{
-          display: "flex", alignItems: "center", gap: 4,
-          padding: "2px 4px 2px " + (8 + depth * 12) + "px",
-          cursor: "pointer", fontSize: 9,
-          background: selNodeId === node.id ? "#1a3a5a" : "transparent",
-          borderLeft: selNodeId === node.id ? "2px solid #0078d4" : "2px solid transparent",
-          color: acText,
-        }}>
-        {node.children.length > 0 && (
-          <span onClick={ev => { ev.stopPropagation(); setExpandedNodes(s => { const n = new Set(s); n.has(node.id) ? n.delete(node.id) : n.add(node.id); return n; }); }}
-            style={{ cursor: "pointer", color: acDim, fontSize: 8, width: 10 }}>
-            {expandedNodes.has(node.id) ? "▼" : "▶"}
-          </span>
-        )}
-        {node.children.length === 0 && <span style={{ width: 10 }} />}
-        <span style={{ fontSize: 9 }}>
-          {node.type === "root" ? "🌐" : node.type.includes("3d") ? "◈" : "—"}
+          display: "flex", alignItems: "center", gap: 3,
+          padding: "2px 4px 2px " + (6 + depth * 14) + "px",
+          cursor: "pointer", fontSize: 10,
+          background: selNodeId === node.id ? "#213d5c" : "transparent",
+          borderLeft: selNodeId === node.id ? "2px solid #4d9bff" : "2px solid transparent",
+          color: node.visible === false ? "#555" : acText,
+        }}
+        onMouseEnter={e => { if (selNodeId !== node.id) e.currentTarget.style.background = "#1a2a3a"; }}
+        onMouseLeave={e => { if (selNodeId !== node.id) e.currentTarget.style.background = "transparent"; }}>
+        {/* Expand toggle */}
+        <span onClick={ev => { ev.stopPropagation(); setExpandedNodes(s => { const n = new Set(s); n.has(node.id) ? n.delete(node.id) : n.add(node.id); return n; }); }}
+          style={{ cursor: "pointer", color: acDim, fontSize: 8, width: 10, flexShrink: 0, textAlign: "center" }}>
+          {node.children?.length > 0 ? (expandedNodes.has(node.id) ? "▼" : "▶") : ""}
         </span>
-        <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{node.name}</span>
-        <span onClick={ev => { ev.stopPropagation(); }} style={{ color: acDim, fontSize: 8 }}>👁</span>
+        {/* Icon */}
+        <span style={{ fontSize: 10, flexShrink: 0 }}>
+          {node.type === "root" ? "📁" : node.type?.includes("3d") ? "⬡" : node.type === "light" ? "💡" : "◻"}
+        </span>
+        {/* Name */}
+        <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 10 }}>{node.name}</span>
+        {/* Visibility toggle */}
+        <span onClick={ev => { ev.stopPropagation(); setSceneNodes(prev => {
+          const toggle = (nodes) => nodes.map(n => n.id === node.id ? { ...n, visible: !n.visible } : { ...n, children: toggle(n.children || []) });
+          return toggle(prev);
+        }); }}
+          style={{ cursor: "pointer", color: node.visible !== false ? "#aaa" : "#444", fontSize: 10, flexShrink: 0, padding: "0 2px" }}
+          title="Toggle Visibility">
+          👁
+        </span>
+        {/* Selectability toggle */}
+        <span onClick={ev => { ev.stopPropagation(); setSceneNodes(prev => {
+          const toggle = (nodes) => nodes.map(n => n.id === node.id ? { ...n, selectable: !n.selectable } : { ...n, children: toggle(n.children || []) });
+          return toggle(prev);
+        }); }}
+          style={{ cursor: "pointer", color: node.selectable !== false ? "#aaa" : "#444", fontSize: 9, flexShrink: 0, padding: "0 2px" }}
+          title="Toggle Selectability">
+          ⊙
+        </span>
       </div>
-      {expandedNodes.has(node.id) && node.children.length > 0 && renderTree(node.children, depth + 1)}
+      {expandedNodes.has(node.id) && node.children?.length > 0 && renderOutlinerTree(node.children, depth + 1)}
     </div>
   ));
 
   const curRibbonGroups = RIBBON[ribbonTab] || RIBBON.Home;
 
+  // ── Viewport left toolbar tools ─────────────────────────────────────
+  const viewportLeftTools = [
+    { id: "select", icon: TOOL_ICONS.select, label: "Select (S)", shortcut: "S" },
+    { id: "cursor3d", icon: TOOL_ICONS.cursor3d, label: "Cursor (C)", shortcut: "C" },
+    { id: "gizmo_move", icon: TOOL_ICONS.gizmo_move, label: "Move (G)", shortcut: "G" },
+    { id: "gizmo_rotate", icon: TOOL_ICONS.gizmo_rotate, label: "Rotate (R)", shortcut: "R" },
+    { id: "gizmo_scale", icon: TOOL_ICONS.gizmo_scale, label: "Scale (S)", shortcut: "S" },
+    null, // separator
+    { id: "gizmo_annotate", icon: TOOL_ICONS.gizmo_annotate, label: "Annotate", shortcut: "" },
+    { id: "gizmo_measure", icon: TOOL_ICONS.gizmo_measure, label: "Measure", shortcut: "" },
+  ];
+
+  // ── Top menu items ──────────────────────────────────────────────────
+  const topMenus = {
+    File: ["New", "Open...", "Open Recent", "---", "Save", "Save As...", "---", "Import...", "Export...", "---", "Quit"],
+    Edit: ["Undo", "Redo", "---", "Select All", "Deselect All", "Invert Selection", "---", "Preferences..."],
+    Render: ["Render Image", "Render Animation", "---", "View Render", "View Animation", "---", "Render Settings"],
+    Window: ["New Window", "Toggle Full Screen", "---", "Workspaces"],
+    Help: ["Manual", "Tutorials", "---", "Report Bug", "---", "About 3DCAD Studio Pro"],
+  };
+
+  const getStatusBarTip = () => {
+    if (vp === "3d") {
+      if (isGizmoDragging) return `Dragging ${gizmoAxis?.toUpperCase() || ""} axis | Release to confirm`;
+      if (hoveredGizmoAxis) return `Click & drag to ${activeTransformMode} on ${hoveredGizmoAxis.toUpperCase()} axis`;
+      if (viewportTool === "select") return "LMB: Select | Shift+LMB: Multi-select | RMB+Drag: Orbit | Scroll: Zoom";
+      if (viewportTool === "gizmo_move") return "Drag X/Y/Z arrows to move | Drag center to free move";
+      if (viewportTool === "gizmo_rotate") return "Drag rotation rings to rotate | X=red Y=green Z=blue";
+      if (viewportTool === "gizmo_scale") return "Drag axis cubes to scale | Drag center for uniform scale";
+      return `Tool: ${viewportTool} | Drag: Orbit | Scroll: Zoom | Del: Delete | Tab: Edit Mode`;
+    }
+    return `Tool: ${TOOL_LABEL[tool] || tool} | Layer: ${layer} | Zoom: ${(zoom * 100).toFixed(0)}% | F7: Grid F8: Ortho F9: Snap`;
+  };
+
   // ════════════════════════════════════════════════════════════════════════
   // RENDER
   // ════════════════════════════════════════════════════════════════════════
   return (
-    <div style={sApp}>
+    <div style={{
+      display: "flex", flexDirection: "column", width: "100vw", height: "100vh",
+      background: "#2d2d30", color: acText,
+      fontFamily: "'Segoe UI', 'SF Pro Text', Tahoma, sans-serif",
+      fontSize: 11, overflow: "hidden", userSelect: "none",
+    }} onClick={() => setOpenMenu(null)}>
 
-      {/* ══ APP BAR ══════════════════════════════════════════════════════ */}
+      {/* ══ [1] TOP BAR — Blender-style main menu + workspaces ══════════════ */}
       <div style={{
-        display: "flex", alignItems: "center", background: "#1e1e1e",
-        borderBottom: `1px solid ${acBorder}`, height: 28, flexShrink: 0, padding: "0 4px", gap: 2,
-      }}>
+        display: "flex", alignItems: "center", background: "#1a1a1a",
+        borderBottom: `1px solid #000`, height: 26, flexShrink: 0, padding: "0", gap: 0, position: "relative", zIndex: 100,
+      }} onClick={e => e.stopPropagation()}>
+
+        {/* App logo */}
         <div style={{
           display: "flex", alignItems: "center", justifyContent: "center",
-          width: 34, height: 28, background: "#c00000", cursor: "pointer",
-          color: "#fff", fontSize: 14, fontWeight: "bold", marginRight: 4, flexShrink: 0,
-        }}>A</div>
+          width: 32, height: 26, background: "#c00000", cursor: "pointer",
+          color: "#fff", fontSize: 13, fontWeight: "bold", flexShrink: 0,
+        }}>3D</div>
 
+        {/* ── File/Edit/etc menus ── */}
+        {Object.entries(topMenus).map(([menuName, items]) => (
+          <div key={menuName} style={{ position: "relative" }}>
+            <div onClick={() => setOpenMenu(openMenu === menuName ? null : menuName)}
+              style={{
+                padding: "0 10px", cursor: "pointer", height: 26, display: "flex", alignItems: "center",
+                fontSize: 11, color: openMenu === menuName ? "#fff" : "#ccc",
+                background: openMenu === menuName ? "#0078d4" : "transparent",
+              }}
+              onMouseEnter={e => { if (openMenu) setOpenMenu(menuName); }}>
+              {menuName}
+            </div>
+            {openMenu === menuName && (
+              <div style={{
+                position: "absolute", top: 26, left: 0, background: "#252525",
+                border: "1px solid #444", borderRadius: "0 3px 3px 3px", minWidth: 160, zIndex: 9999,
+                boxShadow: "0 4px 16px rgba(0,0,0,0.6)",
+              }}>
+                {items.map((item, i) => item === "---" ? (
+                  <div key={i} style={{ height: 1, background: "#3a3a3a", margin: "2px 0" }} />
+                ) : (
+                  <div key={item} onClick={() => {
+                    setOpenMenu(null);
+                    if (item === "Undo") undo();
+                    else if (item === "Redo") redo();
+                    else if (item === "New") { setEntities([]); setObjs3d([]); pushHist([]); }
+                    else if (item === "Select All") { setSelIds3d(objs3d.map(o => o.id)); }
+                    else if (item === "Deselect All") { setSelIds3d([]); }
+                    else if (item === "Render Image") { logCmd("Render: Feature not yet available"); }
+                  }}
+                    style={{
+                      padding: "5px 12px", cursor: "pointer", fontSize: 11, color: "#ccc", whiteSpace: "nowrap",
+                    }}
+                    onMouseEnter={e => e.currentTarget.style.background = "#0078d4"}
+                    onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
+                    {item}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        ))}
+
+        <div style={{ width: 1, height: 14, background: "#444", margin: "0 4px" }} />
+
+        {/* Quick action buttons */}
         {[
-          { icon: "M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z", title: "New", action: () => { setEntities([]); setObjs3d([]); pushHist([]); } },
-          { icon: "M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z", title: "Open" },
-          { icon: "M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2zM17 21v-8H7v8M7 3v5h8", title: "Save" },
+          { icon: "M3 12a9 9 0 1 0 18 0M3 12l3-3M3 12l3 3", title: "Undo", action: undo },
+          { icon: "M21 12a9 9 0 1 1-18 0M21 12l-3-3M21 12l-3 3", title: "Redo", action: redo },
         ].map((b, i) => (
           <button key={i} title={b.title} onClick={b.action}
             style={{ display: "flex", alignItems: "center", justifyContent: "center", width: 22, height: 22, background: "transparent", border: "none", color: acText, cursor: "pointer", borderRadius: 2 }}>
-            <Ic d={b.icon} s={13} />
+            <Ic d={b.icon} s={12} />
           </button>
         ))}
 
-        <div style={{ width: 1, height: 14, background: "#444", margin: "0 3px" }} />
-        <button onClick={undo} title="Undo Ctrl+Z" style={{ display: "flex", alignItems: "center", justifyContent: "center", width: 22, height: 22, background: "transparent", border: "none", color: acText, cursor: "pointer" }}><Ic d="M9 14L4 9l5-5M4 9h11a4 4 0 0 1 0 8h-1" s={13} /></button>
-        <button onClick={redo} title="Redo Ctrl+Y" style={{ display: "flex", alignItems: "center", justifyContent: "center", width: 22, height: 22, background: "transparent", border: "none", color: acText, cursor: "pointer" }}><Ic d="M15 14l5-5-5-5M20 9H9a4 4 0 0 0 0 8h1" s={13} /></button>
-        <div style={{ width: 1, height: 14, background: "#444", margin: "0 3px" }} />
+        <div style={{ width: 1, height: 14, background: "#444", margin: "0 4px" }} />
 
-        {/* Viewport toggle */}
-        {["2d", "3d"].map(v => (
-          <button key={v} onClick={() => setVp(v)} style={{
-            padding: "2px 8px", background: vp === v ? "#0078d4" : "#2a2a2a",
-            color: vp === v ? "#fff" : "#aaa", border: `1px solid ${vp === v ? "#0078d4" : "#555"}`,
-            borderRadius: 2, cursor: "pointer", fontSize: 10, fontWeight: "bold",
-          }}>{v.toUpperCase()}</button>
-        ))}
-
-        <div style={{ flex: 1, textAlign: "center", fontSize: 11, color: acText }}>{activeFile} — 3DCAD Studio Pro</div>
-
-        {/* Search */}
-        <div style={{ display: "flex", alignItems: "center", background: "#111", border: "1px solid #555", borderRadius: 2, padding: "2px 6px", gap: 4, marginRight: 6, minWidth: 150 }}>
-          <Ic d="M21 21l-5-5m2-5a7 7 0 1 1-14 0 7 7 0 0 1 14 0" s={11} c="#888" />
-          <input value={searchQ} onChange={e => setSearchQ(e.target.value)} placeholder="Search tools..."
-            style={{ background: "transparent", border: "none", color: "#fff", fontSize: 10, outline: "none", width: 100 }} />
+        {/* ── Workspace tabs (Blender-style) ── */}
+        <div style={{ display: "flex", height: 26, alignItems: "stretch", flex: 1, overflow: "hidden" }}>
+          {WORKSPACES.map(ws => (
+            <div key={ws} onClick={() => { setActiveWorkspace(ws); if (ws === "Modeling") setRibbonTab("Modeling"); else if (ws === "Sculpting") setRibbonTab("Modeling"); else if (ws === "Shading") setRibbonTab("Lighting"); else if (ws === "Animation") setBottomTab("timeline"); }}
+              style={{
+                padding: "0 10px", cursor: "pointer", fontSize: 10, display: "flex", alignItems: "center",
+                color: activeWorkspace === ws ? "#fff" : "#999",
+                borderBottom: activeWorkspace === ws ? "2px solid #e87d0d" : "2px solid transparent",
+                borderRight: "1px solid #2a2a2a",
+                background: activeWorkspace === ws ? "#2d2d30" : "transparent",
+                whiteSpace: "nowrap",
+              }}>
+              {ws}
+            </div>
+          ))}
         </div>
 
-        {["─", "□", "✕"].map((s, i) => (
-          <button key={i} style={{ display: "flex", alignItems: "center", justifyContent: "center", width: 26, height: 22, background: "transparent", border: "none", color: acText, cursor: "pointer", borderRadius: 0, fontSize: 12 }}
-            onMouseEnter={e => e.currentTarget.style.background = i === 2 ? "#c00000" : "#555"}
-            onMouseLeave={e => e.currentTarget.style.background = "transparent"}
-          >{s}</button>
-        ))}
+        {/* Viewport toggle */}
+        <div style={{ display: "flex", marginRight: 4, gap: 2 }}>
+          {["2d", "3d"].map(v => (
+            <button key={v} onClick={() => setVp(v)} style={{
+              padding: "2px 8px", background: vp === v ? "#0078d4" : "#333",
+              color: vp === v ? "#fff" : "#999", border: `1px solid ${vp === v ? "#0078d4" : "#555"}`,
+              borderRadius: 2, cursor: "pointer", fontSize: 10, fontWeight: "bold", height: 20,
+            }}>{v.toUpperCase()}</button>
+          ))}
+        </div>
+
+        {/* Search */}
+        <div style={{ display: "flex", alignItems: "center", background: "#111", border: "1px solid #444", borderRadius: 2, padding: "2px 6px", gap: 4, marginRight: 4, width: 130 }}>
+          <Ic d="M21 21l-5-5m2-5a7 7 0 1 1-14 0 7 7 0 0 1 14 0" s={10} c="#666" />
+          <input value={searchQ} onChange={e => setSearchQ(e.target.value)} placeholder="Search..."
+            style={{ background: "transparent", border: "none", color: "#fff", fontSize: 10, outline: "none", width: 80 }} />
+        </div>
       </div>
 
       {/* ══ RIBBON TABS ═══════════════════════════════════════════════════ */}
@@ -1524,10 +1857,7 @@ export default function CADEditor() {
                     onClick={() => {
                       if (is3DPrim) { add3D(tid); return; }
                       if (isArch) { genArchitecture(tid); return; }
-                      if (isLight) {
-                        const lt = tid.replace("light_", "");
-                        addLight(lt); return;
-                      }
+                      if (isLight) { addLight(tid.replace("light_", "")); return; }
                       if (isEnv) {
                         if (tid === "sky_day") setEnvSettings(e => ({ ...e, skybox: "day" }));
                         else if (tid === "sky_sunset") setEnvSettings(e => ({ ...e, skybox: "sunset" }));
@@ -1597,9 +1927,8 @@ export default function CADEditor() {
       {/* ══ WORKSPACE ══════════════════════════════════════════════════════ */}
       <div style={{ display: "flex", flex: 1, overflow: "hidden" }}>
 
-        {/* ── LEFT SIDEBAR (180px) ─────────────────────────────────────── */}
+        {/* ── LEFT SIDEBAR ────────────────────────────────────────────── */}
         <div style={{ width: 180, background: acDark, borderRight: `1px solid ${acBorder}`, display: "flex", flexDirection: "column", flexShrink: 0, overflow: "hidden" }}>
-          {/* Sidebar tabs */}
           <div style={{ display: "flex", background: acBg, borderBottom: `1px solid ${acBorder}`, flexShrink: 0 }}>
             {[{ id: "tools", l: "Tools" }, { id: "assets", l: "Assets" }, { id: "scene", l: "Scene" }].map(t => (
               <div key={t.id} onClick={() => setSidebarTab(t.id)} style={{
@@ -1610,7 +1939,6 @@ export default function CADEditor() {
             ))}
           </div>
 
-          {/* TOOLS sidebar */}
           {sidebarTab === "tools" && (
             <div style={{ overflow: "auto", flex: 1, padding: 4 }}>
               {[
@@ -1619,11 +1947,11 @@ export default function CADEditor() {
                 { label: "PRIMITIVES", tools: ["box3d", "sphere3d", "cylinder3d", "cone3d", "torus3d", "plane3d", "capsule3d", "pyramid3d"].map(id => ({ id, icon: TOOL_ICONS[id], label: TOOL_LABEL[id] })) },
                 { label: "ARCHITECTURE", tools: ["wall", "door_gen", "window_gen", "stair_gen", "floor_gen", "roof_gen", "room_gen"].map(id => ({ id, icon: TOOL_ICONS[id], label: TOOL_LABEL[id] })) },
                 { label: "LIGHTS", tools: ["light_point", "light_spot", "light_dir", "light_sun"].map(id => ({ id, icon: TOOL_ICONS[id], label: TOOL_LABEL[id] })) },
-                { label: "CAMERA", tools: [{ id: "orbit3d", icon: TOOL_ICONS.orbit3d, label: "Orbit" }, { id: "pan", icon: TOOL_ICONS.pan, label: "Pan" }, { id: "zoom", icon: TOOL_ICONS.zoom, label: "Zoom" }, { id: "reset_cam", icon: TOOL_ICONS.reset_cam, label: "Reset" }] },
+                { label: "CAMERA", tools: [{ id: "orbit3d", icon: TOOL_ICONS.orbit3d, label: "Orbit" }, { id: "pan", icon: TOOL_ICONS.pan, label: "Pan" }, { id: "reset_cam", icon: TOOL_ICONS.reset_cam, label: "Reset" }] },
                 { label: "EDIT MODE", tools: ["obj_mode", "vert_mode", "edge_mode", "face_mode", "sculpt_mode"].map(id => ({ id, icon: TOOL_ICONS[id], label: TOOL_LABEL[id] })) },
               ].map(group => (
                 <div key={group.label} style={{ marginBottom: 6 }}>
-                  <div style={{ fontSize: 8, color: acDim, padding: "2px 2px 2px 2px", letterSpacing: "0.06em", borderBottom: `1px solid #2a2a2a`, marginBottom: 2 }}>{group.label}</div>
+                  <div style={{ fontSize: 8, color: acDim, padding: "2px 2px", letterSpacing: "0.06em", borderBottom: `1px solid #2a2a2a`, marginBottom: 2 }}>{group.label}</div>
                   <div style={{ display: "flex", flexWrap: "wrap", gap: 2 }}>
                     {group.tools.map(t => {
                       const isActive = tool === t.id || visualStyle === t.id || editMode === t.id;
@@ -1656,7 +1984,6 @@ export default function CADEditor() {
                   </div>
                 </div>
               ))}
-              {/* 3D selection quick actions */}
               {selIds3d.length > 0 && (
                 <div style={{ borderTop: `1px solid #333`, marginTop: 6, paddingTop: 6 }}>
                   <div style={{ fontSize: 8, color: acDim, marginBottom: 4 }}>SELECTION ({selIds3d.length})</div>
@@ -1677,7 +2004,6 @@ export default function CADEditor() {
             </div>
           )}
 
-          {/* ASSETS sidebar */}
           {sidebarTab === "assets" && (
             <div style={{ overflow: "auto", flex: 1 }}>
               {Object.entries(ASSET_LIBRARY).map(([cat, items]) => (
@@ -1702,13 +2028,12 @@ export default function CADEditor() {
             </div>
           )}
 
-          {/* SCENE sidebar */}
           {sidebarTab === "scene" && (
             <div style={{ overflow: "auto", flex: 1 }}>
               <div style={{ fontSize: 8, color: acDim, padding: "4px 6px", background: "#1a1a1a", borderBottom: `1px solid #111` }}>SCENE HIERARCHY</div>
-              {renderTree(sceneNodes)}
+              {renderOutlinerTree(sceneNodes)}
               <div style={{ borderTop: `1px solid #222`, padding: "4px 8px" }}>
-                <div style={{ fontSize: 8, color: acDim, marginBottom: 4 }}>OBJECTS IN SCENE: {objs3d.length}</div>
+                <div style={{ fontSize: 8, color: acDim, marginBottom: 4 }}>OBJECTS: {objs3d.length}</div>
                 {objs3d.map(o => (
                   <div key={o.id} onClick={() => setSelIds3d(prev => prev.includes(o.id) ? prev.filter(i => i !== o.id) : [...prev, o.id])}
                     style={{
@@ -1727,385 +2052,583 @@ export default function CADEditor() {
           )}
         </div>
 
-        {/* ── CANVAS ───────────────────────────────────────────────────── */}
-        <div ref={containerRef} style={{ flex: 1, overflow: "hidden", position: "relative", background: vp === "3d" ? "#111" : "#414141" }}>
-          <canvas ref={canvasRef} width={csz.w} height={csz.h}
-            style={{
-              display: "block", width: "100%", height: "100%",
-              cursor: vp === "3d" ? (orbiting ? "grabbing" : tool === "pan" ? "all-scroll" : "default") :
-                (tool === "pan" || isDrag ? "grabbing" : "crosshair"),
-            }}
-            onMouseMove={onMouseMove}
-            onMouseDown={onMouseDown}
-            onMouseUp={onMouseUp}
-            onDoubleClick={onDblClick}
-            onWheel={onWheel}
-            onContextMenu={onCtxMenu}
-          />
+        {/* ── CENTRAL: Viewport + gizmo toolbar ──────────────────────── */}
+        <div style={{ flex: 1, display: "flex", overflow: "hidden" }}>
 
-          {/* 3D overlay */}
+          {/* [6] LEFT VIEWPORT TOOLBAR (Blender-style) */}
           {vp === "3d" && (
-            <div style={{ position: "absolute", right: 10, top: 10, display: "flex", flexDirection: "column", gap: 6 }}>
-              {/* Visual style */}
-              <div style={{ background: "rgba(20,20,20,0.9)", border: "1px solid #444", borderRadius: 4, padding: 4 }}>
-                <div style={{ fontSize: 8, color: acDim, textAlign: "center", marginBottom: 2 }}>VISUAL</div>
-                {["wireframe", "shaded", "realistic", "conceptual", "xray"].map(vs => (
-                  <div key={vs} onClick={() => setVisualStyle(vs)}
-                    style={{ fontSize: 9, cursor: "pointer", padding: "2px 6px", borderRadius: 2, background: visualStyle === vs ? "#0078d4" : "transparent", color: visualStyle === vs ? "#fff" : "#bbb" }}>
-                    {vs}
+            <div style={{
+              width: 34, background: "#212121", borderRight: "1px solid #111",
+              display: "flex", flexDirection: "column", alignItems: "center",
+              padding: "4px 0", gap: 2, flexShrink: 0, overflowY: "auto",
+            }}>
+              {viewportLeftTools.map((t, i) => t === null ? (
+                <div key={`sep-${i}`} style={{ width: 20, height: 1, background: "#333", margin: "3px 0" }} />
+              ) : (
+                <div key={t.id} title={`${t.label}`}
+                  onClick={() => {
+                    setViewportTool(t.id);
+                    if (t.id === "gizmo_move") setTransformMode("move");
+                    else if (t.id === "gizmo_rotate") setTransformMode("rotate");
+                    else if (t.id === "gizmo_scale") setTransformMode("scale");
+                  }}
+                  style={{
+                    width: 28, height: 28, borderRadius: 4, cursor: "pointer",
+                    display: "flex", alignItems: "center", justifyContent: "center",
+                    background: viewportTool === t.id ? "#0078d4" : "transparent",
+                    border: `1px solid ${viewportTool === t.id ? "#3399ff" : "transparent"}`,
+                    color: viewportTool === t.id ? "#fff" : "#aaa",
+                  }}
+                  onMouseEnter={e => { if (viewportTool !== t.id) e.currentTarget.style.background = "#2a2a2a"; }}
+                  onMouseLeave={e => { if (viewportTool !== t.id) e.currentTarget.style.background = "transparent"; }}>
+                  {t.icon ? <Ic d={t.icon} s={14} c={viewportTool === t.id ? "#fff" : "#aaa"} /> : <span style={{ fontSize: 9 }}>{t.label.slice(0, 2)}</span>}
+                </div>
+              ))}
+
+              {/* Separator */}
+              <div style={{ width: 20, height: 1, background: "#333", margin: "3px 0" }} />
+
+              {/* Visual style quick toggle */}
+              {["wireframe", "shaded", "realistic"].map(vs => (
+                <div key={vs} title={vs} onClick={() => setVisualStyle(vs)}
+                  style={{
+                    width: 28, height: 22, borderRadius: 3, cursor: "pointer",
+                    display: "flex", alignItems: "center", justifyContent: "center",
+                    background: visualStyle === vs ? "#334" : "transparent",
+                    border: `1px solid ${visualStyle === vs ? "#446" : "transparent"}`,
+                    fontSize: 7, color: visualStyle === vs ? "#aaf" : "#666",
+                    textTransform: "uppercase", letterSpacing: "0.04em",
+                  }}>
+                  {vs.slice(0, 3)}
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* ── CANVAS ──────────────────────────────────────────────── */}
+          <div ref={containerRef} style={{ flex: 1, overflow: "hidden", position: "relative", background: vp === "3d" ? "#111" : "#414141" }}>
+            <canvas ref={canvasRef} width={csz.w} height={csz.h}
+              style={{
+                display: "block", width: "100%", height: "100%",
+                cursor: isGizmoDragging ? "grabbing"
+                  : hoveredGizmoAxis ? (activeTransformMode === "rotate" ? "crosshair" : activeTransformMode === "scale" ? "nwse-resize" : "grab")
+                  : vp === "3d" ? (orbiting ? "grabbing" : tool === "pan" ? "all-scroll" : "default")
+                  : (tool === "pan" || isDrag ? "grabbing" : "crosshair"),
+              }}
+              onMouseMove={onMouseMove}
+              onMouseDown={onMouseDown}
+              onMouseUp={onMouseUp}
+              onDoubleClick={onDblClick}
+              onWheel={onWheel}
+              onContextMenu={onCtxMenu}
+            />
+
+            {/* [6] TOP-RIGHT VIEWPORT NAV WIDGETS */}
+            {vp === "3d" && (
+              <div style={{ position: "absolute", right: 10, top: 10, display: "flex", flexDirection: "column", gap: 6, zIndex: 10 }}>
+                {/* Gizmo axis tracker */}
+                <div style={{
+                  width: 60, height: 60, borderRadius: "50%",
+                  background: "rgba(20,20,20,0.7)", border: "1px solid #333",
+                  display: "flex", alignItems: "center", justifyContent: "center",
+                  position: "relative", cursor: "pointer",
+                }} title="Camera Orientation Gizmo">
+                  <svg width="54" height="54" viewBox="0 0 54 54">
+                    {[
+                      { label: "X", x: 44, y: 27, ax: "#ff4444" },
+                      { label: "Y", x: 27, y: 10, ax: "#44dd44" },
+                      { label: "Z", x: 10, y: 44, ax: "#4488ff" },
+                      { label: "-X", x: 10, y: 27, ax: "#884444" },
+                      { label: "-Y", x: 27, y: 44, ax: "#448844" },
+                      { label: "-Z", x: 44, y: 10, ax: "#448888" },
+                    ].map(a => (
+                      <g key={a.label}>
+                        <line x1="27" y1="27" x2={a.x} y2={a.y} stroke={a.ax} strokeWidth="1.5" />
+                        <circle cx={a.x} cy={a.y} r="5" fill={a.ax} opacity="0.85"
+                          onClick={() => {
+                            if (a.label === "X") { setCamAngle(0); setCamPitch(0); }
+                            else if (a.label === "Y") { setCamAngle(0); setCamPitch(1.5); }
+                            else if (a.label === "Z") { setCamAngle(Math.PI / 2); setCamPitch(0); }
+                            else if (a.label === "-X") { setCamAngle(Math.PI); setCamPitch(0); }
+                            else if (a.label === "-Y") { setCamAngle(0); setCamPitch(-1.5); }
+                            else if (a.label === "-Z") { setCamAngle(-Math.PI / 2); setCamPitch(0); }
+                          }} style={{ cursor: "pointer" }} />
+                        <text x={a.x} y={a.y + 1} textAnchor="middle" dominantBaseline="middle" fill="#fff" fontSize="4" fontWeight="bold" style={{ pointerEvents: "none" }}>{a.label}</text>
+                      </g>
+                    ))}
+                    <circle cx="27" cy="27" r="3" fill="#ffffff88" />
+                  </svg>
+                </div>
+
+                {/* Nav buttons */}
+                <div style={{ background: "rgba(20,20,20,0.85)", border: "1px solid #444", borderRadius: 4, overflow: "hidden" }}>
+                  {[
+                    { icon: "M21 21l-5-5m2-5a7 7 0 1 1-14 0 7 7 0 0 1 14 0", title: "Zoom", action: () => setCamDist(400) },
+                    { icon: "M12 2v20M2 12h20", title: "Pan", action: () => setTool("pan") },
+                    { icon: "M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z", title: "Camera View", action: () => { setCamAngle(0.6); setCamPitch(0.3); } },
+                  ].map((b, i) => (
+                    <div key={i} title={b.title} onClick={b.action}
+                      style={{
+                        width: 28, height: 26, display: "flex", alignItems: "center", justifyContent: "center",
+                        cursor: "pointer", borderBottom: i < 2 ? "1px solid #333" : "none",
+                        color: "#999",
+                      }}
+                      onMouseEnter={e => e.currentTarget.style.background = "#2a2a3a"}
+                      onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
+                      <Ic d={b.icon} s={14} c="#aaa" />
+                    </div>
+                  ))}
+                </div>
+
+                {/* Perspective toggle */}
+                <div onClick={() => setIsPerspective(p => !p)}
+                  style={{
+                    background: "rgba(20,20,20,0.85)", border: "1px solid #444", borderRadius: 4,
+                    padding: "3px 6px", cursor: "pointer", fontSize: 9, color: "#bbb", textAlign: "center",
+                  }}
+                  title="Toggle Perspective/Orthographic">
+                  {isPerspective ? "PERSP" : "ORTHO"}
+                </div>
+
+                {/* Visual style panel */}
+                <div style={{ background: "rgba(20,20,20,0.9)", border: "1px solid #444", borderRadius: 4, padding: 4 }}>
+                  <div style={{ fontSize: 8, color: acDim, textAlign: "center", marginBottom: 2 }}>VISUAL</div>
+                  {["wireframe", "shaded", "realistic", "conceptual", "xray"].map(vs => (
+                    <div key={vs} onClick={() => setVisualStyle(vs)}
+                      style={{ fontSize: 9, cursor: "pointer", padding: "2px 6px", borderRadius: 2, background: visualStyle === vs ? "#0078d4" : "transparent", color: visualStyle === vs ? "#fff" : "#bbb" }}>
+                      {vs}
+                    </div>
+                  ))}
+                </div>
+
+                {/* Camera presets */}
+                <div style={{ background: "rgba(20,20,20,0.9)", border: "1px solid #444", borderRadius: 4, padding: 4 }}>
+                  <div style={{ fontSize: 8, color: acDim, textAlign: "center", marginBottom: 2 }}>VIEWS</div>
+                  {[["ISO", 0.6, 0.5], ["TOP", 0, 1.5], ["FRONT", 0, 0], ["RIGHT", 1.57, 0]].map(([l, a, p]) => (
+                    <div key={l} onClick={() => { setCamAngle(a); setCamPitch(p); }}
+                      style={{ fontSize: 9, cursor: "pointer", padding: "2px 6px", borderRadius: 2, background: "rgba(255,255,255,0.06)", color: "#bbb", textAlign: "center", marginBottom: 1 }}>
+                      {l}
+                    </div>
+                  ))}
+                  <div onClick={() => { setCamAngle(0.6); setCamPitch(0.5); setCamDist(400); }}
+                    style={{ fontSize: 8, cursor: "pointer", padding: "2px 6px", background: "rgba(255,255,255,0.06)", color: "#bbb", textAlign: "center", borderRadius: 2 }}>
+                    Reset
                   </div>
-                ))}
-              </div>
-              {/* Views */}
-              <div style={{ background: "rgba(20,20,20,0.9)", border: "1px solid #444", borderRadius: 4, padding: 4 }}>
-                <div style={{ fontSize: 8, color: acDim, textAlign: "center", marginBottom: 2 }}>VIEWS</div>
-                {[["ISO", 0.6, 0.5], ["TOP", 0, 1.5], ["FRONT", 0, 0], ["RIGHT", 1.57, 0]].map(([l, a, p]) => (
-                  <div key={l} onClick={() => { setCamAngle(a); setCamPitch(p); }}
-                    style={{ fontSize: 9, cursor: "pointer", padding: "2px 6px", borderRadius: 2, background: "rgba(255,255,255,0.06)", color: "#bbb", textAlign: "center", marginBottom: 1 }}>
-                    {l}
-                  </div>
-                ))}
-                <div onClick={() => { setCamAngle(0.6); setCamPitch(0.5); setCamDist(400); }}
-                  style={{ fontSize: 8, cursor: "pointer", padding: "2px 6px", background: "rgba(255,255,255,0.06)", color: "#bbb", textAlign: "center", borderRadius: 2 }}>
-                  Reset
                 </div>
               </div>
-            </div>
-          )}
-
-          {/* Info overlay */}
-          {vp === "2d" && (
-            <div style={{ position: "absolute", right: 10, top: 10, background: "rgba(30,30,30,0.85)", border: "1px solid #444", borderRadius: 3, padding: "3px 8px", fontSize: 9, color: "#bbb", pointerEvents: "none" }}>
-              Zoom: {(zoom * 100).toFixed(0)}%  Objects: {entities.length}
-            </div>
-          )}
-          {vp === "3d" && (
-            <div style={{ position: "absolute", left: 10, bottom: 10, background: "rgba(20,20,20,0.85)", border: "1px solid #333", borderRadius: 3, padding: "3px 8px", fontSize: 9, color: "#bbb", pointerEvents: "none" }}>
-              {editMode !== "obj_mode" ? `✎ ${editMode.replace("_", " ").toUpperCase()} | ` : ""}
-              Style: {visualStyle} | Objects: {objs3d.length} | Drag=orbit Scroll=zoom RMB=orbit
-            </div>
-          )}
-        </div>
-
-        {/* ── RIGHT PANEL ──────────────────────────────────────────────── */}
-        <div style={{ width: 220, background: acDark, borderLeft: `1px solid ${acBorder}`, display: "flex", flexDirection: "column", flexShrink: 0 }}>
-          {/* Tabs */}
-          <div style={{ display: "flex", background: acBg, borderBottom: `1px solid ${acBorder}`, flexShrink: 0 }}>
-            {[{ id: "props", l: "Props" }, { id: "material", l: "Material" }, { id: "layers", l: "Layers" }, { id: "physics", l: "Physics" }].map(t => (
-              <div key={t.id} onClick={() => setRightTab(t.id)} style={{
-                flex: 1, textAlign: "center", padding: "4px 2px", cursor: "pointer", fontSize: 9,
-                color: rightTab === t.id ? acLt : acDim,
-                borderBottom: rightTab === t.id ? "2px solid #0078d4" : "2px solid transparent",
-              }}>{t.l}</div>
-            ))}
-          </div>
-
-          <div style={{ overflow: "auto", flex: 1 }}>
-
-            {/* ── PROPERTIES ── */}
-            {rightTab === "props" && (
-              <>
-                {vp === "3d" && firstSel3d ? (
-                  <>
-                    <div style={{ background: acBg, padding: "4px 8px", borderBottom: `1px solid ${acBorder}`, fontSize: 10, fontWeight: "bold", color: acBlue, display: "flex", justifyContent: "space-between" }}>
-                      <span>{firstSel3d.shape.replace("3d", "").toUpperCase()} #{firstSel3d.id}</span>
-                      {selIds3d.length > 1 && <span style={{ color: acDim }}>+{selIds3d.length - 1} more</span>}
-                    </div>
-                    {/* Transform */}
-                    <div style={{ padding: "4px 8px", borderBottom: `1px solid #222` }}>
-                      <div style={{ fontSize: 9, color: acDim, marginBottom: 4 }}>TRANSFORM</div>
-                      <div style={{ display: "flex", gap: 2, marginBottom: 4 }}>
-                        {["move", "rotate", "scale"].map(m => (
-                          <button key={m} onClick={() => setTransformMode(m)} style={{
-                            flex: 1, padding: "2px 2px", background: transformMode === m ? "#0078d4" : "#2a2a2a",
-                            border: `1px solid ${transformMode === m ? "#0078d4" : "#444"}`,
-                            color: transformMode === m ? "#fff" : "#aaa", borderRadius: 2, cursor: "pointer", fontSize: 8,
-                          }}>{m[0].toUpperCase() + m.slice(1)}</button>
-                        ))}
-                      </div>
-                      {/* Position */}
-                      <div style={{ fontSize: 9, color: acDim, marginBottom: 2 }}>Position</div>
-                      {["x", "y", "z"].map(ax => (
-                        <div key={ax} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 2 }}>
-                          <span style={{ fontSize: 9, color: ["#ff5555", "#55cc55", "#5588ff"][["x", "y", "z"].indexOf(ax)], width: 12 }}>{ax.toUpperCase()}</span>
-                          <input type="number" value={(firstSel3d[ax] || 0).toFixed(1)}
-                            onChange={e => selIds3d.forEach(sid => upd3D(sid, { [ax]: +e.target.value }))}
-                            style={{ ...sInput, width: 55 }} />
-                        </div>
-                      ))}
-                      {/* Rotation */}
-                      <div style={{ fontSize: 9, color: acDim, marginBottom: 2, marginTop: 4 }}>Rotation (°)</div>
-                      {["rotX", "rotY", "rotZ"].map((ax, i) => (
-                        <div key={ax} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 2 }}>
-                          <span style={{ fontSize: 9, color: ["#ff5555", "#55cc55", "#5588ff"][i], width: 12 }}>{["X", "Y", "Z"][i]}</span>
-                          <input type="number" value={((firstSel3d[ax] || 0) * 180 / Math.PI).toFixed(1)}
-                            onChange={e => selIds3d.forEach(sid => upd3D(sid, { [ax]: +e.target.value * Math.PI / 180 }))}
-                            style={{ ...sInput, width: 55 }} />
-                        </div>
-                      ))}
-                    </div>
-                    {/* Dimensions */}
-                    <div style={{ padding: "4px 8px", borderBottom: `1px solid #222` }}>
-                      <div style={{ fontSize: 9, color: acDim, marginBottom: 3 }}>DIMENSIONS</div>
-                      {firstSel3d.w !== undefined && [["W", "w"], ["H", "h"], ["D", "d"]].map(([l, k]) => (
-                        <div key={k} style={sPropRow}>
-                          <span style={{ color: acDim }}>{l}</span>
-                          <input type="number" value={firstSel3d[k] || 0} onChange={e => selIds3d.forEach(sid => upd3D(sid, { [k]: +e.target.value }))} style={sInput} />
-                        </div>
-                      ))}
-                      {firstSel3d.r !== undefined && (
-                        <div style={sPropRow}>
-                          <span style={{ color: acDim }}>Radius</span>
-                          <input type="number" value={firstSel3d.r} onChange={e => selIds3d.forEach(sid => upd3D(sid, { r: +e.target.value }))} style={sInput} />
-                        </div>
-                      )}
-                      {firstSel3d.base !== undefined && (
-                        <div style={sPropRow}>
-                          <span style={{ color: acDim }}>Base</span>
-                          <input type="number" value={firstSel3d.base} onChange={e => selIds3d.forEach(sid => upd3D(sid, { base: +e.target.value }))} style={sInput} />
-                        </div>
-                      )}
-                    </div>
-                    {/* Quick actions */}
-                    <div style={{ padding: "4px 8px" }}>
-                      <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
-                        <button onClick={duplicate3D} style={{ flex: 1, padding: "3px", background: "#1a3a5a", border: "1px solid #2a5a8a", color: "#ccc", borderRadius: 2, cursor: "pointer", fontSize: 9 }}>Duplicate</button>
-                        <button onClick={() => mirror3D("x")} style={{ flex: 1, padding: "3px", background: "#2a2a2a", border: "1px solid #444", color: "#ccc", borderRadius: 2, cursor: "pointer", fontSize: 9 }}>Mirror X</button>
-                        <button onClick={del3D} style={{ flex: 1, padding: "3px", background: "#5a1111", border: "1px solid #8a2222", color: "#ccc", borderRadius: 2, cursor: "pointer", fontSize: 9 }}>Delete</button>
-                      </div>
-                      <label style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 6, cursor: "pointer", fontSize: 9 }}>
-                        <input type="checkbox" checked={!!firstSel3d.showMeasure} onChange={e => selIds3d.forEach(sid => upd3D(sid, { showMeasure: e.target.checked }))} />
-                        Show measurements
-                      </label>
-                    </div>
-                  </>
-                ) : vp === "3d" ? (
-                  <>
-                    <div style={{ background: acBg, padding: "4px 8px", borderBottom: `1px solid ${acBorder}`, fontSize: 10, fontWeight: "bold", color: acLt }}>3D Scene</div>
-                    <div style={sPropRow}><span style={{ color: acDim }}>Objects</span><span>{objs3d.length}</span></div>
-                    <div style={sPropRow}><span style={{ color: acDim }}>Lights</span><span>{lights.length}</span></div>
-                    <div style={sPropRow}><span style={{ color: acDim }}>Visual Style</span><span style={{ color: acLt }}>{visualStyle}</span></div>
-                    <div style={sPropRow}><span style={{ color: acDim }}>Edit Mode</span><span style={{ color: "#00d4ff" }}>{editMode.replace("_", " ")}</span></div>
-                    <div style={sPropRow}><span style={{ color: acDim }}>Cam Angle</span><span>{(camAngle * 57.3).toFixed(1)}°</span></div>
-                    <div style={sPropRow}><span style={{ color: acDim }}>Cam Pitch</span><span>{(camPitch * 57.3).toFixed(1)}°</span></div>
-                    <div style={sPropRow}><span style={{ color: acDim }}>Cam Dist</span><span>{camDist.toFixed(0)}</span></div>
-                    <div style={{ padding: "6px 8px", fontSize: 9, color: acDim, lineHeight: 1.6 }}>
-                      <div>🖱 Left drag = Orbit</div>
-                      <div>🖱 Right drag = Pan</div>
-                      <div>🖱 Scroll = Zoom</div>
-                      <div>Tab = Cycle edit mode</div>
-                      <div>G/R/S = Move/Rot/Scale</div>
-                      <div>Del = Delete selected</div>
-                      <div>Ctrl+D = Duplicate</div>
-                      <div>1/3/7 = Views</div>
-                    </div>
-                  </>
-                ) : (
-                  // 2D properties
-                  <>
-                    <div style={{ background: acBg, padding: "4px 8px", borderBottom: `1px solid ${acBorder}`, fontSize: 10, fontWeight: "bold", color: acLt }}>
-                      {selEnt2d.length === 0 ? "2D Properties" : `${selEnt2d[0].type.toUpperCase()} selected`}
-                    </div>
-                    {selEnt2d.length === 0 ? (
-                      <>
-                        <div style={sPropRow}><span style={{ color: acDim }}>Tool</span><span style={{ color: acLt }}>{TOOL_LABEL[tool] || tool}</span></div>
-                        <div style={sPropRow}><span style={{ color: acDim }}>Layer</span><span>{layer}</span></div>
-                        <div style={sPropRow}><span style={{ color: acDim }}>Objects</span><span>{entities.length}</span></div>
-                        <div style={sPropRow}><span style={{ color: acDim }}>Zoom</span><span>{(zoom * 100).toFixed(0)}%</span></div>
-                      </>
-                    ) : selEnt2d.map(ent => (
-                      <div key={ent.id}>
-                        <div style={sPropRow}><span style={{ color: acDim }}>Layer</span><span>{ent.layer}</span></div>
-                        <div style={sPropRow}><span style={{ color: acDim }}>Color</span><span style={{ display: "flex", gap: 4 }}><span style={{ display: "inline-block", width: 10, height: 10, background: ent.color, borderRadius: 1 }} />{ent.color}</span></div>
-                        {ent.type === "line" && <>
-                          <div style={sPropRow}><span style={{ color: acDim }}>Length</span><span>{Math.hypot(ent.x2 - ent.x1, ent.y2 - ent.y1).toFixed(2)}</span></div>
-                          <div style={sPropRow}><span style={{ color: acDim }}>Angle</span><span>{(Math.atan2(ent.y2 - ent.y1, ent.x2 - ent.x1) * 180 / Math.PI).toFixed(1)}°</span></div>
-                        </>}
-                        {ent.type === "circle" && <>
-                          <div style={sPropRow}><span style={{ color: acDim }}>Radius</span><span>{ent.r.toFixed(2)}</span></div>
-                          <div style={sPropRow}><span style={{ color: acDim }}>Area</span><span>{(Math.PI * ent.r * ent.r).toFixed(2)}</span></div>
-                        </>}
-                        {ent.type === "rect" && <>
-                          <div style={sPropRow}><span style={{ color: acDim }}>W</span><span>{Math.abs(ent.x2 - ent.x1).toFixed(2)}</span></div>
-                          <div style={sPropRow}><span style={{ color: acDim }}>H</span><span>{Math.abs(ent.y2 - ent.y1).toFixed(2)}</span></div>
-                        </>}
-                      </div>
-                    ))}
-                  </>
-                )}
-              </>
             )}
 
-            {/* ── MATERIAL ── */}
-            {rightTab === "material" && (
-              <>
-                <div style={{ background: acBg, padding: "4px 8px", borderBottom: `1px solid ${acBorder}`, fontSize: 10, fontWeight: "bold", color: acLt }}>Material Editor</div>
-                {/* Presets */}
-                <div style={{ padding: "4px 6px", borderBottom: `1px solid #222` }}>
-                  <div style={{ fontSize: 9, color: acDim, marginBottom: 4 }}>PRESETS</div>
-                  <div style={{ display: "flex", flexWrap: "wrap", gap: 3 }}>
-                    {Object.keys(MATERIALS).map(name => (
-                      <div key={name} onClick={() => {
-                        setSelectedMaterial(name);
-                        if (firstSel3d) selIds3d.forEach(sid => updMat(sid, MATERIALS[name]));
-                        else setColor(MATERIALS[name].color);
+            {/* Info overlay */}
+            {vp === "2d" && (
+              <div style={{ position: "absolute", right: 10, top: 10, background: "rgba(30,30,30,0.85)", border: "1px solid #444", borderRadius: 3, padding: "3px 8px", fontSize: 9, color: "#bbb", pointerEvents: "none" }}>
+                Zoom: {(zoom * 100).toFixed(0)}%  Objects: {entities.length}
+              </div>
+            )}
+            {vp === "3d" && (
+              <div style={{ position: "absolute", left: 44, bottom: 10, background: "rgba(20,20,20,0.85)", border: "1px solid #333", borderRadius: 3, padding: "3px 8px", fontSize: 9, color: "#bbb", pointerEvents: "none" }}>
+                {editMode !== "obj_mode" ? `✎ ${editMode.replace("_", " ").toUpperCase()} | ` : ""}
+                {viewportTool !== "select" ? `${TOOL_LABEL[viewportTool] || viewportTool} | ` : ""}
+                Style: {visualStyle} | Objects: {objs3d.length} | {isPerspective ? "Perspective" : "Orthographic"}
+              </div>
+            )}
+
+            {/* Gizmo drag hint */}
+            {isGizmoDragging && (
+              <div style={{
+                position: "absolute", top: "50%", left: "50%", transform: "translate(-50%,-50%)",
+                background: "rgba(0,0,0,0.7)", border: "1px solid #0078d4", borderRadius: 4,
+                padding: "6px 14px", fontSize: 11, color: "#fff", pointerEvents: "none",
+              }}>
+                {activeTransformMode.toUpperCase()} on {gizmoAxis?.toUpperCase() || "XZ"}
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* ── RIGHT PANEL: Outliner + Properties ──────────────────────── */}
+        <div style={{ width: 240, background: acDark, borderLeft: `1px solid ${acBorder}`, display: "flex", flexDirection: "column", flexShrink: 0 }}>
+
+          {/* ── [2] OUTLINER (top half) ── */}
+          <div style={{ flex: "0 0 auto", maxHeight: "38%", display: "flex", flexDirection: "column", borderBottom: `2px solid #111` }}>
+            <div style={{
+              background: "#1a1a2a", padding: "4px 8px", borderBottom: "1px solid #111",
+              fontSize: 10, fontWeight: "bold", color: "#8fa8d0", display: "flex", justifyContent: "space-between", alignItems: "center",
+              flexShrink: 0,
+            }}>
+              <span>📂 Outliner</span>
+              <div style={{ display: "flex", gap: 4 }}>
+                <span style={{ fontSize: 9, color: acDim, cursor: "pointer" }} onClick={() => setObjs3d([])}>🗑</span>
+                <span style={{ fontSize: 9, color: acDim, cursor: "pointer" }} onClick={() => add3D("box3d")}>＋</span>
+              </div>
+            </div>
+            <div style={{ overflow: "auto", flex: 1 }}>
+              {renderOutlinerTree(sceneNodes)}
+              {objs3d.length > 0 && (
+                <div style={{ borderTop: "1px solid #1a1a1a" }}>
+                  {objs3d.map(o => (
+                    <div key={o.id} onClick={() => setSelIds3d(prev => prev.includes(o.id) ? prev.filter(i => i !== o.id) : [...prev, o.id])}
+                      style={{
+                        display: "flex", alignItems: "center", gap: 4, padding: "2px 8px",
+                        cursor: "pointer", fontSize: 10,
+                        background: selIds3d.includes(o.id) ? "#213d5c" : "transparent",
+                        borderLeft: selIds3d.includes(o.id) ? "2px solid #4d9bff" : "2px solid transparent",
+                        color: acText,
                       }}
-                        style={{
-                          padding: "2px 5px", borderRadius: 2, cursor: "pointer", fontSize: 8,
-                          background: selectedMaterial === name ? "#0078d4" : "#2a2a2a",
-                          border: `1px solid ${selectedMaterial === name ? "#0078d4" : "#444"}`,
-                          color: selectedMaterial === name ? "#fff" : "#bbb",
-                        }}>{name}</div>
-                    ))}
-                  </div>
+                      onMouseEnter={e => { if (!selIds3d.includes(o.id)) e.currentTarget.style.background = "#1a2a3a"; }}
+                      onMouseLeave={e => { if (!selIds3d.includes(o.id)) e.currentTarget.style.background = "transparent"; }}>
+                      <span style={{ width: 10, height: 10, background: o.material?.color || o.color, borderRadius: 1, flexShrink: 0, display: "inline-block", border: "1px solid #555" }} />
+                      <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{o.shape.replace("3d", "").replace("_gen", "")}</span>
+                      {/* visibility eye */}
+                      <span style={{ color: "#666", fontSize: 10, cursor: "pointer" }}
+                        onClick={ev => { ev.stopPropagation(); }}
+                        title="Visibility">👁</span>
+                      {/* selectability */}
+                      <span style={{ color: "#666", fontSize: 9, cursor: "pointer" }}
+                        onClick={ev => { ev.stopPropagation(); }}
+                        title="Selectability">⊙</span>
+                    </div>
+                  ))}
                 </div>
-                {/* Manual controls */}
-                <div style={{ padding: "4px 8px" }}>
-                  <div style={{ fontSize: 9, color: acDim, marginBottom: 4 }}>PROPERTIES</div>
-                  {firstSel3d ? (
+              )}
+            </div>
+          </div>
+
+          {/* ── [3] PROPERTIES PANEL (bottom half) ── */}
+          <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
+            <div style={{ display: "flex", background: acBg, borderBottom: `1px solid ${acBorder}`, flexShrink: 0 }}>
+              {[{ id: "props", l: "Properties" }, { id: "material", l: "Material" }, { id: "layers", l: "Layers" }, { id: "physics", l: "Physics" }].map(t => (
+                <div key={t.id} onClick={() => setRightTab(t.id)} style={{
+                  flex: 1, textAlign: "center", padding: "4px 2px", cursor: "pointer", fontSize: 9,
+                  color: rightTab === t.id ? acLt : acDim,
+                  borderBottom: rightTab === t.id ? "2px solid #e87d0d" : "2px solid transparent",
+                  whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
+                }}>{t.l}</div>
+              ))}
+            </div>
+
+            <div style={{ overflow: "auto", flex: 1 }}>
+
+              {/* ── PROPERTIES (with Transform: Location/Rotation/Scale) ── */}
+              {rightTab === "props" && (
+                <>
+                  {vp === "3d" && firstSel3d ? (
                     <>
-                      <div style={sPropRow}><span style={{ color: acDim }}>Color</span>
-                        <input type="color" value={firstSel3d.material?.color || "#4488cc"}
-                          onChange={e => { selIds3d.forEach(sid => updMat(sid, { color: e.target.value })); }}
-                          style={{ width: 40, height: 16, border: "1px solid #555", padding: 0, cursor: "pointer" }} />
+                      <div style={{ background: "#1a1a2a", padding: "4px 8px", borderBottom: `1px solid ${acBorder}`, fontSize: 10, fontWeight: "bold", color: "#8fa8d0", display: "flex", justifyContent: "space-between" }}>
+                        <span>⬡ {firstSel3d.shape.replace("3d", "").toUpperCase()} #{firstSel3d.id}</span>
+                        {selIds3d.length > 1 && <span style={{ color: acDim }}>+{selIds3d.length - 1}</span>}
                       </div>
-                      {[
-                        { key: "roughness", label: "Roughness", min: 0, max: 1, step: 0.05 },
-                        { key: "metalness", label: "Metalness", min: 0, max: 1, step: 0.05 },
-                        { key: "opacity", label: "Opacity", min: 0, max: 1, step: 0.05 },
-                      ].map(({ key, label, min, max, step }) => (
-                        <div key={key} style={{ marginBottom: 4 }}>
-                          <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 1 }}>
-                            <span style={{ fontSize: 9, color: acDim }}>{label}</span>
-                            <span style={{ fontSize: 9 }}>{((firstSel3d.material?.[key] ?? MATERIALS.Default[key]) * 100).toFixed(0)}%</span>
+
+                      {/* Transform: Location */}
+                      <div style={{ padding: "5px 8px", borderBottom: `1px solid #1a1a1a` }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+                          <span style={{ fontSize: 10, color: "#aac", fontWeight: "bold" }}>▸ Transform</span>
+                          <div style={{ display: "flex", gap: 2 }}>
+                            {["move", "rotate", "scale"].map(m => (
+                              <button key={m} onClick={() => { setTransformMode(m); setViewportTool(`gizmo_${m}`); }} style={{
+                                padding: "1px 5px", background: activeTransformMode === m ? "#e87d0d" : "#2a2a2a",
+                                border: `1px solid ${activeTransformMode === m ? "#e87d0d" : "#444"}`,
+                                color: activeTransformMode === m ? "#fff" : "#aaa", borderRadius: 2, cursor: "pointer", fontSize: 8,
+                              }}>{m[0].toUpperCase()}</button>
+                            ))}
                           </div>
-                          <input type="range" min={min} max={max} step={step}
-                            value={firstSel3d.material?.[key] ?? MATERIALS.Default[key]}
-                            onChange={e => selIds3d.forEach(sid => updMat(sid, { [key]: +e.target.value }))}
-                            style={{ width: "100%", height: 12 }} />
                         </div>
-                      ))}
-                      <div style={sPropRow}><span style={{ color: acDim }}>Emissive</span>
-                        <input type="color" value={firstSel3d.material?.emissive || "#000000"}
-                          onChange={e => selIds3d.forEach(sid => updMat(sid, { emissive: e.target.value }))}
-                          style={{ width: 40, height: 16, border: "1px solid #555", padding: 0, cursor: "pointer" }} />
+
+                        {/* Location */}
+                        <div style={{ marginBottom: 4 }}>
+                          <div style={{ fontSize: 9, color: "#8fa8d0", marginBottom: 2, fontWeight: "bold" }}>Location</div>
+                          {[["X", "x", "#ff6666"], ["Y", "y", "#66dd66"], ["Z", "z", "#6688ff"]].map(([label, key, col]) => (
+                            <div key={key} style={{ display: "flex", alignItems: "center", gap: 4, marginBottom: 2 }}>
+                              <span style={{ fontSize: 9, color: col, width: 10, fontWeight: "bold", flexShrink: 0 }}>{label}</span>
+                              <input type="number" step="1"
+                                value={(firstSel3d[key] || 0).toFixed(2)}
+                                onChange={e => selIds3d.forEach(sid => upd3D(sid, { [key]: parseFloat(e.target.value) || 0 }))}
+                                style={{ ...sNumInput, flex: 1, width: "auto", borderLeft: `2px solid ${col}` }} />
+                            </div>
+                          ))}
+                        </div>
+
+                        {/* Rotation */}
+                        <div style={{ marginBottom: 4 }}>
+                          <div style={{ fontSize: 9, color: "#8fa8d0", marginBottom: 2, fontWeight: "bold" }}>Rotation (°)</div>
+                          {[["X", "rotX", "#ff6666"], ["Y", "rotY", "#66dd66"], ["Z", "rotZ", "#6688ff"]].map(([label, key, col]) => (
+                            <div key={key} style={{ display: "flex", alignItems: "center", gap: 4, marginBottom: 2 }}>
+                              <span style={{ fontSize: 9, color: col, width: 10, fontWeight: "bold", flexShrink: 0 }}>{label}</span>
+                              <input type="number" step="1"
+                                value={((firstSel3d[key] || 0) * 180 / Math.PI).toFixed(1)}
+                                onChange={e => selIds3d.forEach(sid => upd3D(sid, { [key]: (parseFloat(e.target.value) || 0) * Math.PI / 180 }))}
+                                style={{ ...sNumInput, flex: 1, width: "auto", borderLeft: `2px solid ${col}` }} />
+                            </div>
+                          ))}
+                        </div>
+
+                        {/* Scale (dimensions) */}
+                        <div>
+                          <div style={{ fontSize: 9, color: "#8fa8d0", marginBottom: 2, fontWeight: "bold" }}>Scale / Dimensions</div>
+                          {firstSel3d.w !== undefined && [["W", "w", "#ff6666"], ["H", "h", "#66dd66"], ["D", "d", "#6688ff"]].map(([label, key, col]) => (
+                            <div key={key} style={{ display: "flex", alignItems: "center", gap: 4, marginBottom: 2 }}>
+                              <span style={{ fontSize: 9, color: col, width: 10, fontWeight: "bold", flexShrink: 0 }}>{label}</span>
+                              <input type="number" step="1" min="1"
+                                value={firstSel3d[key] || 1}
+                                onChange={e => selIds3d.forEach(sid => upd3D(sid, { [key]: Math.max(0.1, parseFloat(e.target.value) || 1) }))}
+                                style={{ ...sNumInput, flex: 1, width: "auto", borderLeft: `2px solid ${col}` }} />
+                            </div>
+                          ))}
+                          {firstSel3d.r !== undefined && (
+                            <div style={{ display: "flex", alignItems: "center", gap: 4, marginBottom: 2 }}>
+                              <span style={{ fontSize: 9, color: "#66ddff", width: 10, fontWeight: "bold", flexShrink: 0 }}>R</span>
+                              <input type="number" step="1" min="1"
+                                value={firstSel3d.r || 1}
+                                onChange={e => selIds3d.forEach(sid => upd3D(sid, { r: Math.max(0.1, parseFloat(e.target.value) || 1) }))}
+                                style={{ ...sNumInput, flex: 1, width: "auto", borderLeft: "2px solid #66ddff" }} />
+                            </div>
+                          )}
+                          {firstSel3d.base !== undefined && (
+                            <div style={{ display: "flex", alignItems: "center", gap: 4, marginBottom: 2 }}>
+                              <span style={{ fontSize: 9, color: "#dddd66", width: 16, fontWeight: "bold", flexShrink: 0 }}>B</span>
+                              <input type="number" step="1" min="1"
+                                value={firstSel3d.base || 1}
+                                onChange={e => selIds3d.forEach(sid => upd3D(sid, { base: Math.max(0.1, parseFloat(e.target.value) || 1) }))}
+                                style={{ ...sNumInput, flex: 1, width: "auto", borderLeft: "2px solid #dddd66" }} />
+                            </div>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Quick actions */}
+                      <div style={{ padding: "4px 8px" }}>
+                        <div style={{ display: "flex", gap: 3, flexWrap: "wrap" }}>
+                          <button onClick={duplicate3D} style={{ flex: 1, padding: "3px", background: "#1a3a5a", border: "1px solid #2a5a8a", color: "#ccc", borderRadius: 2, cursor: "pointer", fontSize: 9 }}>Dup</button>
+                          <button onClick={() => mirror3D("x")} style={{ flex: 1, padding: "3px", background: "#2a2a2a", border: "1px solid #444", color: "#ccc", borderRadius: 2, cursor: "pointer", fontSize: 9 }}>MirX</button>
+                          <button onClick={del3D} style={{ flex: 1, padding: "3px", background: "#5a1111", border: "1px solid #8a2222", color: "#ccc", borderRadius: 2, cursor: "pointer", fontSize: 9 }}>Del</button>
+                        </div>
+                        <label style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 5, cursor: "pointer", fontSize: 9 }}>
+                          <input type="checkbox" checked={!!firstSel3d.showMeasure} onChange={e => selIds3d.forEach(sid => upd3D(sid, { showMeasure: e.target.checked }))} />
+                          Show measurements
+                        </label>
+                      </div>
+                    </>
+                  ) : vp === "3d" ? (
+                    <>
+                      <div style={{ background: "#1a1a2a", padding: "4px 8px", borderBottom: `1px solid ${acBorder}`, fontSize: 10, fontWeight: "bold", color: "#8fa8d0" }}>3D Scene Info</div>
+                      <div style={sPropRow}><span style={{ color: acDim }}>Objects</span><span>{objs3d.length}</span></div>
+                      <div style={sPropRow}><span style={{ color: acDim }}>Lights</span><span>{lights.length}</span></div>
+                      <div style={sPropRow}><span style={{ color: acDim }}>Style</span><span style={{ color: acLt }}>{visualStyle}</span></div>
+                      <div style={sPropRow}><span style={{ color: acDim }}>Edit Mode</span><span style={{ color: "#00d4ff" }}>{editMode.replace("_", " ")}</span></div>
+                      <div style={sPropRow}><span style={{ color: acDim }}>Tool</span><span style={{ color: "#e87d0d" }}>{viewportTool}</span></div>
+                      <div style={sPropRow}><span style={{ color: acDim }}>Cam Angle</span><span>{(camAngle * 57.3).toFixed(1)}°</span></div>
+                      <div style={sPropRow}><span style={{ color: acDim }}>Cam Pitch</span><span>{(camPitch * 57.3).toFixed(1)}°</span></div>
+                      <div style={sPropRow}><span style={{ color: acDim }}>Cam Dist</span><span>{camDist.toFixed(0)}</span></div>
+                      <div style={{ padding: "6px 8px", fontSize: 9, color: acDim, lineHeight: 1.7 }}>
+                        <div>Select an object to edit its transform.</div>
+                        <div>Use the gizmo toolbar (left) to move/rotate/scale.</div>
+                        <div>🖱 Drag = Orbit | Scroll = Zoom</div>
+                        <div>G/R/S = Transform mode | Tab = Edit mode</div>
+                        <div>Del = Delete | Ctrl+D = Duplicate</div>
                       </div>
                     </>
                   ) : (
-                    <div style={{ fontSize: 9, color: acDim, padding: "8px 0" }}>Select an object to edit its material</div>
-                  )}
-                </div>
-                {/* Lighting controls */}
-                <div style={{ padding: "4px 8px", borderTop: `1px solid #222` }}>
-                  <div style={{ fontSize: 9, color: acDim, marginBottom: 4 }}>SCENE LIGHTS</div>
-                  {lights.map(l => (
-                    <div key={l.id} style={{ padding: "3px 0", borderBottom: `1px solid #1a1a1a`, fontSize: 9 }}>
-                      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 2 }}>
-                        <span style={{ color: acText }}>{l.type}</span>
-                        <input type="color" value={l.color}
-                          onChange={e => setLights(ls => ls.map(x => x.id === l.id ? { ...x, color: e.target.value } : x))}
-                          style={{ width: 24, height: 12, border: "none", padding: 0, cursor: "pointer" }} />
-                      </div>
-                      <input type="range" min={0} max={3} step={0.1} value={l.intensity}
-                        onChange={e => setLights(ls => ls.map(x => x.id === l.id ? { ...x, intensity: +e.target.value } : x))}
-                        style={{ width: "100%", height: 10 }} />
-                    </div>
-                  ))}
-                  <button onClick={() => {
-                    const id = nextId();
-                    setLights(l => [...l, { id, type: "point", color: "#ffffff", intensity: 1.0, x: 0, y: -100, z: 0 }]);
-                  }} style={{ marginTop: 4, width: "100%", padding: "3px", background: "#1a3a5a", border: "1px solid #2a5a8a", color: "#ccc", borderRadius: 2, cursor: "pointer", fontSize: 9 }}>
-                    + Add Point Light
-                  </button>
-                </div>
-              </>
-            )}
-
-            {/* ── LAYERS ── */}
-            {rightTab === "layers" && (
-              <>
-                <div style={{ background: acBg, padding: "4px 8px", borderBottom: `1px solid ${acBorder}`, fontSize: 10, fontWeight: "bold", color: acLt, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                  <span>Layers</span>
-                  <button onClick={() => { const name = prompt("Layer name:", "NewLayer"); if (name) setLayers(l => [...l, { id: l.length + 1, name, color: "#ffffff", visible: true, locked: false, frozen: false }]); }}
-                    style={{ background: acBlue, border: "none", color: "#fff", borderRadius: 2, padding: "1px 6px", cursor: "pointer", fontSize: 9 }}>+ New</button>
-                </div>
-                <div style={{ display: "flex", background: "#111", padding: "2px 6px", fontSize: 8, color: acDim, gap: 4 }}>
-                  <span style={{ width: 14 }}>✓</span><span style={{ width: 14 }}>V</span><span style={{ width: 14 }}>L</span><span style={{ flex: 1 }}>Name</span><span style={{ width: 12 }}>C</span>
-                </div>
-                {layers.map(lyr => (
-                  <div key={lyr.id} onClick={() => setLayer(lyr.name)}
-                    style={{ display: "flex", alignItems: "center", padding: "2px 6px", gap: 4, cursor: "pointer", fontSize: 9, background: layer === lyr.name ? "#1a3a5a" : "transparent", borderLeft: layer === lyr.name ? "2px solid #0078d4" : "2px solid transparent", borderBottom: "1px solid #111" }}>
-                    <span style={{ width: 14, color: layer === lyr.name ? acBlue : "#333" }}>✓</span>
-                    <span style={{ width: 14, cursor: "pointer", fontSize: 10, color: lyr.visible ? "#fff" : "#444" }}
-                      onClick={ev => { ev.stopPropagation(); setLayers(ls => ls.map(l => l.id === lyr.id ? { ...l, visible: !l.visible } : l)); }}>👁</span>
-                    <span style={{ width: 14, cursor: "pointer", fontSize: 10, color: lyr.locked ? "#ffcc00" : "#333" }}
-                      onClick={ev => { ev.stopPropagation(); setLayers(ls => ls.map(l => l.id === lyr.id ? { ...l, locked: !l.locked } : l)); }}>🔒</span>
-                    <span style={{ flex: 1, color: layer === lyr.name ? acLt : acText, overflow: "hidden", textOverflow: "ellipsis" }}>{lyr.name}</span>
-                    <span style={{ width: 12, height: 10, background: lyr.color, border: "1px solid #444", borderRadius: 1, display: "inline-block" }} />
-                  </div>
-                ))}
-              </>
-            )}
-
-            {/* ── PHYSICS ── */}
-            {rightTab === "physics" && (
-              <>
-                <div style={{ background: acBg, padding: "4px 8px", borderBottom: `1px solid ${acBorder}`, fontSize: 10, fontWeight: "bold", color: acLt }}>Physics Settings</div>
-                <div style={{ padding: 8 }}>
-                  <label style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 8, cursor: "pointer", fontSize: 10 }}>
-                    <input type="checkbox" checked={physics.enabled} onChange={e => setPhysics(p => ({ ...p, enabled: e.target.checked }))} />
-                    Enable Physics Simulation
-                  </label>
-                  {[
-                    { k: "gravity", l: "Gravity (m/s²)", min: -20, max: 0, step: 0.1 },
-                    { k: "bounce", l: "Bounce (0-1)", min: 0, max: 1, step: 0.05 },
-                    { k: "friction", l: "Friction (0-1)", min: 0, max: 1, step: 0.05 },
-                  ].map(({ k, l, min, max, step }) => (
-                    <div key={k} style={{ marginBottom: 8 }}>
-                      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 2 }}>
-                        <span style={{ fontSize: 9, color: acDim }}>{l}</span>
-                        <span style={{ fontSize: 9 }}>{physics[k]}</span>
-                      </div>
-                      <input type="range" min={min} max={max} step={step} value={physics[k]}
-                        onChange={e => setPhysics(p => ({ ...p, [k]: +e.target.value }))}
-                        style={{ width: "100%", height: 12 }} />
-                    </div>
-                  ))}
-                  {firstSel3d && (
                     <>
-                      <div style={{ fontSize: 9, color: acDim, marginTop: 8, marginBottom: 4 }}>OBJECT PHYSICS</div>
-                      {[
-                        { k: "mass", l: "Mass (kg)", def: 1, min: 0.1, max: 100 },
-                        { k: "physBounce", l: "Bounce", def: 0.3, min: 0, max: 1, step: 0.05 },
-                      ].map(({ k, l, def, min, max, step = 0.1 }) => (
-                        <div key={k} style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
-                          <span style={{ fontSize: 9, color: acDim }}>{l}</span>
-                          <input type="number" min={min} max={max} step={step}
-                            value={firstSel3d[k] || def}
-                            onChange={e => selIds3d.forEach(sid => upd3D(sid, { [k]: +e.target.value }))}
-                            style={sInput} />
+                      <div style={{ background: "#1a1a2a", padding: "4px 8px", borderBottom: `1px solid ${acBorder}`, fontSize: 10, fontWeight: "bold", color: "#8fa8d0" }}>
+                        {selEnt2d.length === 0 ? "2D Properties" : `${selEnt2d[0].type.toUpperCase()} selected`}
+                      </div>
+                      {selEnt2d.length === 0 ? (
+                        <>
+                          <div style={sPropRow}><span style={{ color: acDim }}>Tool</span><span style={{ color: acLt }}>{TOOL_LABEL[tool] || tool}</span></div>
+                          <div style={sPropRow}><span style={{ color: acDim }}>Layer</span><span>{layer}</span></div>
+                          <div style={sPropRow}><span style={{ color: acDim }}>Objects</span><span>{entities.length}</span></div>
+                          <div style={sPropRow}><span style={{ color: acDim }}>Zoom</span><span>{(zoom * 100).toFixed(0)}%</span></div>
+                        </>
+                      ) : selEnt2d.map(ent => (
+                        <div key={ent.id}>
+                          <div style={sPropRow}><span style={{ color: acDim }}>Layer</span><span>{ent.layer}</span></div>
+                          <div style={sPropRow}><span style={{ color: acDim }}>Color</span><span style={{ display: "flex", gap: 4 }}><span style={{ display: "inline-block", width: 10, height: 10, background: ent.color, borderRadius: 1 }} />{ent.color}</span></div>
+                          {ent.type === "line" && <>
+                            <div style={sPropRow}><span style={{ color: acDim }}>Length</span><span>{Math.hypot(ent.x2 - ent.x1, ent.y2 - ent.y1).toFixed(2)}</span></div>
+                            <div style={sPropRow}><span style={{ color: acDim }}>Angle</span><span>{(Math.atan2(ent.y2 - ent.y1, ent.x2 - ent.x1) * 180 / Math.PI).toFixed(1)}°</span></div>
+                          </>}
+                          {ent.type === "circle" && <>
+                            <div style={sPropRow}><span style={{ color: acDim }}>Radius</span><span>{ent.r.toFixed(2)}</span></div>
+                            <div style={sPropRow}><span style={{ color: acDim }}>Area</span><span>{(Math.PI * ent.r * ent.r).toFixed(2)}</span></div>
+                          </>}
+                          {ent.type === "rect" && <>
+                            <div style={sPropRow}><span style={{ color: acDim }}>W</span><span>{Math.abs(ent.x2 - ent.x1).toFixed(2)}</span></div>
+                            <div style={sPropRow}><span style={{ color: acDim }}>H</span><span>{Math.abs(ent.y2 - ent.y1).toFixed(2)}</span></div>
+                          </>}
                         </div>
                       ))}
-                      <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer", fontSize: 9, marginTop: 4 }}>
-                        <input type="checkbox" checked={!!firstSel3d.isStatic}
-                          onChange={e => selIds3d.forEach(sid => upd3D(sid, { isStatic: e.target.checked }))} />
-                        Static (immovable)
-                      </label>
                     </>
                   )}
-                </div>
-              </>
-            )}
+                </>
+              )}
+
+              {/* ── MATERIAL ── */}
+              {rightTab === "material" && (
+                <>
+                  <div style={{ background: "#1a1a2a", padding: "4px 8px", borderBottom: `1px solid ${acBorder}`, fontSize: 10, fontWeight: "bold", color: "#8fa8d0" }}>Material Editor</div>
+                  <div style={{ padding: "4px 6px", borderBottom: `1px solid #222` }}>
+                    <div style={{ fontSize: 9, color: acDim, marginBottom: 4 }}>PRESETS</div>
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: 3 }}>
+                      {Object.keys(MATERIALS).map(name => (
+                        <div key={name} onClick={() => {
+                          setSelectedMaterial(name);
+                          if (firstSel3d) selIds3d.forEach(sid => updMat(sid, MATERIALS[name]));
+                          else setColor(MATERIALS[name].color);
+                        }}
+                          style={{
+                            padding: "2px 5px", borderRadius: 2, cursor: "pointer", fontSize: 8,
+                            background: selectedMaterial === name ? "#0078d4" : "#2a2a2a",
+                            border: `1px solid ${selectedMaterial === name ? "#0078d4" : "#444"}`,
+                            color: selectedMaterial === name ? "#fff" : "#bbb",
+                          }}>{name}</div>
+                      ))}
+                    </div>
+                  </div>
+                  <div style={{ padding: "4px 8px" }}>
+                    <div style={{ fontSize: 9, color: acDim, marginBottom: 4 }}>PROPERTIES</div>
+                    {firstSel3d ? (
+                      <>
+                        <div style={sPropRow}><span style={{ color: acDim }}>Color</span>
+                          <input type="color" value={firstSel3d.material?.color || "#4488cc"}
+                            onChange={e => { selIds3d.forEach(sid => updMat(sid, { color: e.target.value })); }}
+                            style={{ width: 40, height: 16, border: "1px solid #555", padding: 0, cursor: "pointer" }} />
+                        </div>
+                        {[
+                          { key: "roughness", label: "Roughness", min: 0, max: 1, step: 0.05 },
+                          { key: "metalness", label: "Metalness", min: 0, max: 1, step: 0.05 },
+                          { key: "opacity", label: "Opacity", min: 0, max: 1, step: 0.05 },
+                        ].map(({ key, label, min, max, step }) => (
+                          <div key={key} style={{ marginBottom: 4 }}>
+                            <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 1 }}>
+                              <span style={{ fontSize: 9, color: acDim }}>{label}</span>
+                              <span style={{ fontSize: 9 }}>{((firstSel3d.material?.[key] ?? MATERIALS.Default[key]) * 100).toFixed(0)}%</span>
+                            </div>
+                            <input type="range" min={min} max={max} step={step}
+                              value={firstSel3d.material?.[key] ?? MATERIALS.Default[key]}
+                              onChange={e => selIds3d.forEach(sid => updMat(sid, { [key]: +e.target.value }))}
+                              style={{ width: "100%", height: 12 }} />
+                          </div>
+                        ))}
+                        <div style={sPropRow}><span style={{ color: acDim }}>Emissive</span>
+                          <input type="color" value={firstSel3d.material?.emissive || "#000000"}
+                            onChange={e => selIds3d.forEach(sid => updMat(sid, { emissive: e.target.value }))}
+                            style={{ width: 40, height: 16, border: "1px solid #555", padding: 0, cursor: "pointer" }} />
+                        </div>
+                      </>
+                    ) : (
+                      <div style={{ fontSize: 9, color: acDim, padding: "8px 0" }}>Select an object to edit its material</div>
+                    )}
+                  </div>
+                  <div style={{ padding: "4px 8px", borderTop: `1px solid #222` }}>
+                    <div style={{ fontSize: 9, color: acDim, marginBottom: 4 }}>SCENE LIGHTS</div>
+                    {lights.map(l => (
+                      <div key={l.id} style={{ padding: "3px 0", borderBottom: `1px solid #1a1a1a`, fontSize: 9 }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 2 }}>
+                          <span style={{ color: acText }}>{l.type}</span>
+                          <input type="color" value={l.color}
+                            onChange={e => setLights(ls => ls.map(x => x.id === l.id ? { ...x, color: e.target.value } : x))}
+                            style={{ width: 24, height: 12, border: "none", padding: 0, cursor: "pointer" }} />
+                        </div>
+                        <input type="range" min={0} max={3} step={0.1} value={l.intensity}
+                          onChange={e => setLights(ls => ls.map(x => x.id === l.id ? { ...x, intensity: +e.target.value } : x))}
+                          style={{ width: "100%", height: 10 }} />
+                      </div>
+                    ))}
+                    <button onClick={() => {
+                      const id = nextId();
+                      setLights(l => [...l, { id, type: "point", color: "#ffffff", intensity: 1.0, x: 0, y: -100, z: 0 }]);
+                    }} style={{ marginTop: 4, width: "100%", padding: "3px", background: "#1a3a5a", border: "1px solid #2a5a8a", color: "#ccc", borderRadius: 2, cursor: "pointer", fontSize: 9 }}>
+                      + Add Point Light
+                    </button>
+                  </div>
+                </>
+              )}
+
+              {/* ── LAYERS ── */}
+              {rightTab === "layers" && (
+                <>
+                  <div style={{ background: "#1a1a2a", padding: "4px 8px", borderBottom: `1px solid ${acBorder}`, fontSize: 10, fontWeight: "bold", color: "#8fa8d0", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                    <span>Layers</span>
+                    <button onClick={() => { const name = prompt("Layer name:", "NewLayer"); if (name) setLayers(l => [...l, { id: l.length + 1, name, color: "#ffffff", visible: true, locked: false, frozen: false }]); }}
+                      style={{ background: acBlue, border: "none", color: "#fff", borderRadius: 2, padding: "1px 6px", cursor: "pointer", fontSize: 9 }}>+ New</button>
+                  </div>
+                  <div style={{ display: "flex", background: "#111", padding: "2px 6px", fontSize: 8, color: acDim, gap: 4 }}>
+                    <span style={{ width: 14 }}>✓</span><span style={{ width: 14 }}>V</span><span style={{ width: 14 }}>L</span><span style={{ flex: 1 }}>Name</span><span style={{ width: 12 }}>C</span>
+                  </div>
+                  {layers.map(lyr => (
+                    <div key={lyr.id} onClick={() => setLayer(lyr.name)}
+                      style={{ display: "flex", alignItems: "center", padding: "2px 6px", gap: 4, cursor: "pointer", fontSize: 9, background: layer === lyr.name ? "#1a3a5a" : "transparent", borderLeft: layer === lyr.name ? "2px solid #0078d4" : "2px solid transparent", borderBottom: "1px solid #111" }}>
+                      <span style={{ width: 14, color: layer === lyr.name ? acBlue : "#333" }}>✓</span>
+                      <span style={{ width: 14, cursor: "pointer", fontSize: 10, color: lyr.visible ? "#fff" : "#444" }}
+                        onClick={ev => { ev.stopPropagation(); setLayers(ls => ls.map(l => l.id === lyr.id ? { ...l, visible: !l.visible } : l)); }}>👁</span>
+                      <span style={{ width: 14, cursor: "pointer", fontSize: 10, color: lyr.locked ? "#ffcc00" : "#333" }}
+                        onClick={ev => { ev.stopPropagation(); setLayers(ls => ls.map(l => l.id === lyr.id ? { ...l, locked: !l.locked } : l)); }}>🔒</span>
+                      <span style={{ flex: 1, color: layer === lyr.name ? acLt : acText, overflow: "hidden", textOverflow: "ellipsis" }}>{lyr.name}</span>
+                      <span style={{ width: 12, height: 10, background: lyr.color, border: "1px solid #444", borderRadius: 1, display: "inline-block" }} />
+                    </div>
+                  ))}
+                </>
+              )}
+
+              {/* ── PHYSICS ── */}
+              {rightTab === "physics" && (
+                <>
+                  <div style={{ background: "#1a1a2a", padding: "4px 8px", borderBottom: `1px solid ${acBorder}`, fontSize: 10, fontWeight: "bold", color: "#8fa8d0" }}>Physics</div>
+                  <div style={{ padding: 8 }}>
+                    <label style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 8, cursor: "pointer", fontSize: 10 }}>
+                      <input type="checkbox" checked={physics.enabled} onChange={e => setPhysics(p => ({ ...p, enabled: e.target.checked }))} />
+                      Enable Physics
+                    </label>
+                    {[
+                      { k: "gravity", l: "Gravity (m/s²)", min: -20, max: 0, step: 0.1 },
+                      { k: "bounce", l: "Bounce (0-1)", min: 0, max: 1, step: 0.05 },
+                      { k: "friction", l: "Friction (0-1)", min: 0, max: 1, step: 0.05 },
+                    ].map(({ k, l, min, max, step }) => (
+                      <div key={k} style={{ marginBottom: 8 }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 2 }}>
+                          <span style={{ fontSize: 9, color: acDim }}>{l}</span>
+                          <span style={{ fontSize: 9 }}>{physics[k]}</span>
+                        </div>
+                        <input type="range" min={min} max={max} step={step} value={physics[k]}
+                          onChange={e => setPhysics(p => ({ ...p, [k]: +e.target.value }))}
+                          style={{ width: "100%", height: 12 }} />
+                      </div>
+                    ))}
+                    {firstSel3d && (
+                      <>
+                        <div style={{ fontSize: 9, color: acDim, marginTop: 8, marginBottom: 4 }}>OBJECT PHYSICS</div>
+                        {[
+                          { k: "mass", l: "Mass (kg)", def: 1, min: 0.1, max: 100 },
+                          { k: "physBounce", l: "Bounce", def: 0.3, min: 0, max: 1, step: 0.05 },
+                        ].map(({ k, l, def, min, max, step = 0.1 }) => (
+                          <div key={k} style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
+                            <span style={{ fontSize: 9, color: acDim }}>{l}</span>
+                            <input type="number" min={min} max={max} step={step}
+                              value={firstSel3d[k] || def}
+                              onChange={e => selIds3d.forEach(sid => upd3D(sid, { [k]: +e.target.value }))}
+                              style={sInput} />
+                          </div>
+                        ))}
+                        <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer", fontSize: 9, marginTop: 4 }}>
+                          <input type="checkbox" checked={!!firstSel3d.isStatic}
+                            onChange={e => selIds3d.forEach(sid => upd3D(sid, { isStatic: e.target.checked }))} />
+                          Static (immovable)
+                        </label>
+                      </>
+                    )}
+                  </div>
+                </>
+              )}
+            </div>
           </div>
         </div>
       </div>
 
       {/* ══ LAYOUT TABS ══════════════════════════════════════════════════ */}
-      <div style={{ display: "flex", alignItems: "center", background: "#2a2a2a", borderTop: `1px solid ${acBorder}`, height: 20, padding: "0 4px", flexShrink: 0 }}>
+      <div style={{ display: "flex", alignItems: "center", background: "#252525", borderTop: `1px solid ${acBorder}`, height: 20, padding: "0 4px", flexShrink: 0 }}>
         {["Model", "Layout1", "Layout2"].map(t => (
           <div key={t} onClick={() => setLayoutTab(t)} style={{
             padding: "1px 10px", cursor: "pointer", fontSize: 9,
-            background: layoutTab === t ? "#0078d4" : "#444",
+            background: layoutTab === t ? "#0078d4" : "#3a3a3a",
             color: layoutTab === t ? "#fff" : "#bbb",
             border: `1px solid ${layoutTab === t ? "#005a9e" : "#555"}`,
             borderBottom: "none", borderRadius: "3px 3px 0 0", marginRight: 2,
@@ -2121,23 +2644,22 @@ export default function CADEditor() {
         </div>
       </div>
 
-      {/* ══ BOTTOM PANEL ════════════════════════════════════════════════ */}
-      <div style={{ background: "#111", borderTop: `1px solid #444`, flexShrink: 0, display: "flex", flexDirection: "column", height: 100 }}>
+      {/* ══ BOTTOM AREA: Command + [4] Timeline ══════════════════════════ */}
+      <div style={{ background: "#111", borderTop: `1px solid #444`, flexShrink: 0, display: "flex", flexDirection: "column" }}>
         {/* Bottom tabs */}
         <div style={{ display: "flex", background: "#1a1a1a", borderBottom: "1px solid #333", height: 20, flexShrink: 0 }}>
-          {[{ id: "cmd", l: "Command" }, { id: "timeline", l: "Timeline" }, { id: "coords", l: "Coordinates" }].map(t => (
+          {[{ id: "cmd", l: "Command" }, { id: "timeline", l: "🎬 Timeline" }, { id: "coords", l: "Coords" }].map(t => (
             <div key={t.id} onClick={() => setBottomTab(t.id)} style={{
               padding: "2px 10px", cursor: "pointer", fontSize: 9,
               color: bottomTab === t.id ? acLt : acDim,
-              borderBottom: bottomTab === t.id ? "2px solid #0078d4" : "2px solid transparent",
-              background: "transparent",
+              borderBottom: bottomTab === t.id ? "2px solid #e87d0d" : "2px solid transparent",
             }}>{t.l}</div>
           ))}
         </div>
 
         {/* Command */}
         {bottomTab === "cmd" && (
-          <>
+          <div style={{ height: 90, display: "flex", flexDirection: "column" }}>
             <div style={{ flex: 1, overflow: "auto", padding: "3px 8px", fontSize: 10, color: "#fff", fontFamily: "monospace", lineHeight: 1.4 }}
               ref={el => { if (el) el.scrollTop = el.scrollHeight; }}>
               {cmdLog.map((line, i) => (
@@ -2152,41 +2674,90 @@ export default function CADEditor() {
                 value={cmdInput} onChange={e => setCmdInput(e.target.value)} onKeyDown={execCmd}
                 placeholder="Type command or 'help'..." autoComplete="off" spellCheck="false" />
             </div>
-          </>
+          </div>
         )}
 
-        {/* Timeline */}
+        {/* [4] TIMELINE (enhanced Blender-style) */}
         {bottomTab === "timeline" && (
-          <div style={{ flex: 1, display: "flex", flexDirection: "column", padding: "4px 8px" }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4 }}>
-              <button onClick={() => setTimelineFrame(0)} style={{ padding: "2px 6px", background: "#2a2a2a", border: "1px solid #444", color: "#ccc", borderRadius: 2, cursor: "pointer", fontSize: 10 }}>⏮</button>
-              <button onClick={() => setTimelinePlaying(p => !p)} style={{ padding: "2px 8px", background: timelinePlaying ? "#c00000" : "#0078d4", border: "none", color: "#fff", borderRadius: 2, cursor: "pointer", fontSize: 10 }}>
-                {timelinePlaying ? "⏹ Stop" : "▶ Play"}
+          <div style={{ height: 90, display: "flex", flexDirection: "column", padding: "4px 8px" }}>
+            {/* Controls row */}
+            <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4, flexShrink: 0 }}>
+              {/* Transport buttons */}
+              <button onClick={() => setTimelineFrame(timelineStart)} title="Jump to Start" style={{ padding: "2px 6px", background: "#2a2a2a", border: "1px solid #444", color: "#ccc", borderRadius: 2, cursor: "pointer", fontSize: 12 }}>⏮</button>
+              <button onClick={() => setTimelineFrame(f => Math.max(timelineStart, f - 1))} title="Previous Frame" style={{ padding: "2px 6px", background: "#2a2a2a", border: "1px solid #444", color: "#ccc", borderRadius: 2, cursor: "pointer", fontSize: 12 }}>◀</button>
+              <button onClick={() => setTimelinePlaying(p => !p)} style={{
+                padding: "2px 10px", background: timelinePlaying ? "#c00000" : "#0078d4",
+                border: "none", color: "#fff", borderRadius: 2, cursor: "pointer", fontSize: 11, minWidth: 50,
+              }}>
+                {timelinePlaying ? "⏹" : "▶"}
               </button>
-              <span style={{ fontSize: 9, color: acDim }}>Frame: {timelineFrame} / 240</span>
-              <div style={{ flex: 1 }}>
-                <input type="range" min={0} max={239} value={timelineFrame} onChange={e => setTimelineFrame(+e.target.value)}
-                  style={{ width: "100%", height: 14 }} />
-              </div>
+              <button onClick={() => setTimelineFrame(f => Math.min(timelineEnd, f + 1))} title="Next Frame" style={{ padding: "2px 6px", background: "#2a2a2a", border: "1px solid #444", color: "#ccc", borderRadius: 2, cursor: "pointer", fontSize: 12 }}>▶</button>
+              <button onClick={() => setTimelineFrame(timelineEnd)} title="Jump to End" style={{ padding: "2px 6px", background: "#2a2a2a", border: "1px solid #444", color: "#ccc", borderRadius: 2, cursor: "pointer", fontSize: 12 }}>⏭</button>
+
+              <div style={{ width: 1, height: 16, background: "#444", margin: "0 4px" }} />
+
+              {/* Frame inputs */}
+              <span style={{ fontSize: 9, color: acDim }}>Start</span>
+              <input type="number" value={timelineStart} min={1} max={timelineEnd - 1}
+                onChange={e => setTimelineStart(Math.max(1, +e.target.value))}
+                style={{ width: 46, background: "#1a1a1a", color: "#fff", border: "1px solid #444", fontSize: 10, padding: "2px 4px", borderRadius: 2 }} />
+
+              <span style={{ fontSize: 9, color: "#e87d0d", fontWeight: "bold" }}>Frame</span>
+              <input type="number" value={timelineFrame} min={timelineStart} max={timelineEnd}
+                onChange={e => setTimelineFrame(Math.max(timelineStart, Math.min(timelineEnd, +e.target.value)))}
+                style={{ width: 54, background: "#1a1a1a", color: "#e87d0d", border: "1px solid #664400", fontSize: 10, padding: "2px 4px", borderRadius: 2, fontWeight: "bold", textAlign: "center" }} />
+
+              <span style={{ fontSize: 9, color: acDim }}>End</span>
+              <input type="number" value={timelineEnd} min={timelineStart + 1}
+                onChange={e => setTimelineEnd(Math.max(timelineStart + 1, +e.target.value))}
+                style={{ width: 46, background: "#1a1a1a", color: "#fff", border: "1px solid #444", fontSize: 10, padding: "2px 4px", borderRadius: 2 }} />
+
+              <div style={{ flex: 1 }} />
               <span style={{ fontSize: 9, color: acDim }}>FPS: 30</span>
+              <span style={{ fontSize: 9, color: "#666" }}>{timelinePlaying ? "● REC" : "○"}</span>
             </div>
-            <div style={{ display: "flex", alignItems: "center", gap: 2, height: 30, background: "#1a1a1a", borderRadius: 3, padding: "0 4px", overflowX: "auto" }}>
-              <div style={{ display: "flex", alignItems: "center", height: "100%" }}>
-                {Array.from({ length: 24 }).map((_, i) => (
-                  <div key={i} style={{ width: 10, borderRight: "1px solid #333", height: "100%", display: "flex", alignItems: "flex-end", paddingBottom: 2 }}>
-                    <span style={{ fontSize: 7, color: "#555", writingMode: "horizontal-tb" }}>{i * 10}</span>
-                  </div>
-                ))}
+
+            {/* Timeline scrubber */}
+            <div style={{ flex: 1, position: "relative", display: "flex", alignItems: "center", background: "#1a1a1a", borderRadius: 2, overflow: "hidden", border: "1px solid #2a2a2a" }}>
+              {/* Frame ticks */}
+              <div style={{ position: "absolute", top: 0, left: 0, right: 0, height: 12, display: "flex", alignItems: "flex-end", paddingBottom: 2, overflow: "hidden" }}>
+                {Array.from({ length: Math.min(50, timelineEnd - timelineStart + 1) }).map((_, i) => {
+                  const step = Math.ceil((timelineEnd - timelineStart) / 50);
+                  const frame = timelineStart + i * step;
+                  const pct = (frame - timelineStart) / (timelineEnd - timelineStart) * 100;
+                  return (
+                    <div key={i} style={{ position: "absolute", left: `${pct}%`, display: "flex", flexDirection: "column", alignItems: "center" }}>
+                      <span style={{ fontSize: 7, color: "#555", whiteSpace: "nowrap" }}>{frame}</span>
+                      <div style={{ width: 1, height: 4, background: "#333" }} />
+                    </div>
+                  );
+                })}
               </div>
+              {/* Progress bar */}
+              <div style={{
+                position: "absolute", left: 0, top: 12, bottom: 0,
+                width: `${(timelineFrame - timelineStart) / (timelineEnd - timelineStart) * 100}%`,
+                background: "rgba(232,125,13,0.15)", pointerEvents: "none",
+              }} />
               {/* Playhead */}
-              <div style={{ position: "absolute", left: 8 + timelineFrame * 0.5, width: 2, height: 30, background: "#ff4444", borderRadius: 1, pointerEvents: "none" }} />
+              <div style={{
+                position: "absolute",
+                left: `calc(${(timelineFrame - timelineStart) / (timelineEnd - timelineStart) * 100}% - 1px)`,
+                top: 0, bottom: 0, width: 2, background: "#e87d0d", zIndex: 2, pointerEvents: "none",
+              }}>
+                <div style={{ width: 8, height: 8, background: "#e87d0d", borderRadius: "0 0 2px 2px", marginLeft: -3, marginTop: 10 }} />
+              </div>
+              {/* Scrub input */}
+              <input type="range" min={timelineStart} max={timelineEnd} value={timelineFrame}
+                onChange={e => setTimelineFrame(+e.target.value)}
+                style={{ position: "absolute", left: 0, right: 0, top: 0, bottom: 0, width: "100%", opacity: 0, cursor: "pointer", zIndex: 3 }} />
             </div>
           </div>
         )}
 
         {/* Coordinates */}
         {bottomTab === "coords" && (
-          <div style={{ flex: 1, padding: "6px 8px", display: "flex", gap: 20, alignItems: "flex-start" }}>
+          <div style={{ height: 90, padding: "6px 8px", display: "flex", gap: 20, alignItems: "flex-start" }}>
             {vp === "2d" ? (
               <>
                 <div>
@@ -2205,12 +2776,6 @@ export default function CADEditor() {
                     D: {Math.hypot(worldPt.x - startPt.x, worldPt.y - startPt.y).toFixed(4)}
                   </div>
                 </div>}
-                <div>
-                  <div style={{ fontSize: 9, color: acDim, marginBottom: 2 }}>UNITS</div>
-                  <select style={{ background: acDark, color: acText, border: "1px solid #444", fontSize: 9, padding: "1px 3px" }}>
-                    {["mm", "cm", "m", "in", "ft"].map(u => <option key={u}>{u}</option>)}
-                  </select>
-                </div>
               </>
             ) : (
               <>
@@ -2233,7 +2798,7 @@ export default function CADEditor() {
                 <div>
                   <div style={{ fontSize: 9, color: acDim, marginBottom: 2 }}>ENVIRONMENT</div>
                   <div style={{ fontSize: 9, color: acText, lineHeight: 1.8 }}>
-                    Skybox: {envSettings.skybox}<br />
+                    Sky: {envSettings.skybox}<br />
                     Fog: {envSettings.fog ? "ON" : "OFF"}<br />
                     Water: {envSettings.water ? "ON" : "OFF"}
                   </div>
@@ -2244,45 +2809,49 @@ export default function CADEditor() {
         )}
       </div>
 
-      {/* ══ STATUS BAR ══════════════════════════════════════════════════ */}
-      <div style={{ display: "flex", alignItems: "center", background: "#0078d4", height: 22, padding: "0 8px", gap: 0, flexShrink: 0, borderTop: "1px solid #005a9e" }}>
-        <div style={{ color: "#fff", fontFamily: "monospace", fontSize: 10, minWidth: 200, marginRight: 8 }}>
-          {vp === "2d"
-            ? `${worldPt.x.toFixed(3)},  ${worldPt.y.toFixed(3)},  0.000`
-            : `3D | ${objs3d.length} objects | ${selIds3d.length} selected | ${editMode.replace("_mode", "")}`}
+      {/* ══ [5] STATUS BAR ══════════════════════════════════════════════ */}
+      <div style={{
+        display: "flex", alignItems: "center", background: "#1e3a1e", height: 20,
+        padding: "0 8px", gap: 0, flexShrink: 0, borderTop: "1px solid #2a4a2a",
+      }}>
+        {/* Status / tip text */}
+        <div style={{ color: "#88cc88", fontFamily: "monospace", fontSize: 10, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+          ℹ {getStatusBarTip()}
         </div>
-        {vp === "2d" && [
-          { label: "MODEL", active: true, action: () => {} },
-          { label: "GRID", active: grid, action: () => setGrid(g => !g) },
-          { label: "SNAP", active: snap, action: () => setSnap(s => !s) },
-          { label: "ORTHO", active: orthoOn, action: () => setOrthoOn(o => !o) },
-          { label: "DYN", active: dynInput, action: () => setDynInput(d => !d) },
-        ].map(b => (
-          <div key={b.label} onClick={b.action} style={{
-            padding: "0 7px", cursor: "pointer", height: 22, display: "flex", alignItems: "center",
-            color: b.active ? "#fff" : "rgba(255,255,255,0.5)",
-            fontSize: 10, borderRight: "1px solid rgba(255,255,255,0.15)",
-            background: b.active ? "rgba(255,255,255,0.15)" : "transparent",
-            fontWeight: b.active ? "bold" : "normal",
-          }}>{b.label}</div>
-        ))}
-        {vp === "3d" && [
-          { label: "GRID", active: showGrid3d, action: () => setShowGrid3d(g => !g) },
-          { label: "AXES", active: showAxes3d, action: () => setShowAxes3d(a => !a) },
-          { label: visualStyle.toUpperCase(), active: true, action: () => {} },
-        ].map(b => (
-          <div key={b.label} onClick={b.action} style={{
-            padding: "0 7px", cursor: "pointer", height: 22, display: "flex", alignItems: "center",
-            color: b.active ? "#fff" : "rgba(255,255,255,0.5)",
-            fontSize: 10, borderRight: "1px solid rgba(255,255,255,0.15)",
-            background: b.active ? "rgba(255,255,255,0.15)" : "transparent",
-          }}>{b.label}</div>
-        ))}
-        <div style={{ flex: 1 }} />
-        <div style={{ color: "rgba(255,255,255,0.8)", fontSize: 10, padding: "0 8px", borderLeft: "1px solid rgba(255,255,255,0.2)" }}>
-          {vp === "2d" ? `${TOOL_LABEL[tool] || tool} | ${layer}` : `${editMode.replace("_mode", "")} | ${visualStyle}`}
+
+        {/* Toggle indicators */}
+        <div style={{ display: "flex", gap: 0, marginLeft: 8, borderLeft: "1px solid #2a4a2a" }}>
+          {vp === "2d" ? [
+            { label: "SNAP", active: snap, action: () => setSnap(s => !s) },
+            { label: "GRID", active: grid, action: () => setGrid(g => !g) },
+            { label: "ORTHO", active: orthoOn, action: () => setOrthoOn(o => !o) },
+          ].map(b => (
+            <div key={b.label} onClick={b.action} style={{
+              padding: "0 7px", cursor: "pointer", height: 20, display: "flex", alignItems: "center",
+              color: b.active ? "#88ff88" : "#3a5a3a",
+              fontSize: 9, borderRight: "1px solid #2a4a2a",
+              background: b.active ? "rgba(100,180,100,0.12)" : "transparent",
+              fontWeight: b.active ? "bold" : "normal",
+            }}>{b.label}</div>
+          )) : [
+            { label: "GRID", active: showGrid3d, action: () => setShowGrid3d(g => !g) },
+            { label: "AXES", active: showAxes3d, action: () => setShowAxes3d(a => !a) },
+            { label: visualStyle.toUpperCase().slice(0, 5), active: true, action: () => {} },
+            { label: isPerspective ? "PERSP" : "ORTHO", active: true, action: () => setIsPerspective(p => !p) },
+          ].map(b => (
+            <div key={b.label} onClick={b.action} style={{
+              padding: "0 7px", cursor: "pointer", height: 20, display: "flex", alignItems: "center",
+              color: b.active ? "#88ff88" : "#3a5a3a",
+              fontSize: 9, borderRight: "1px solid #2a4a2a",
+              background: b.active ? "rgba(100,180,100,0.12)" : "transparent",
+            }}>{b.label}</div>
+          ))}
         </div>
-        <div style={{ padding: "0 6px", cursor: "pointer", fontSize: 11 }} title="Notifications">🔔</div>
+
+        {/* App version */}
+        <div style={{ color: "#3a5a3a", fontSize: 9, padding: "0 8px", borderLeft: "1px solid #2a4a2a", whiteSpace: "nowrap" }}>
+          3DCAD Studio Pro v2.0 | Blender-style UI
+        </div>
       </div>
     </div>
   );
